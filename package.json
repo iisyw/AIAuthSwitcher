@@ -3,7 +3,7 @@
   "displayName": "AIAuthSwitcher",
   "description": "Back up and switch local auth files for AI coding tools",
   "version": "0.0.1",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "keywords": [
     "ai",
     "auth",
