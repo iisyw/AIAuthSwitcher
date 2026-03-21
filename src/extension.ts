@@ -209,22 +209,17 @@ async function backupCurrentAuth(context: vscode.ExtensionContext): Promise<void
 		const summary = summarizeAuth(auth);
 		const backupDir = await ensureBackupDirectory(context);
 		const existingBackupPath = await findMatchingBackup(backupDir, auth);
-
-		if (existingBackupPath) {
-			await vscode.window.showInformationMessage(
-				`This auth is already backed up as ${path.basename(existingBackupPath)}.`
-			);
-			return;
-		}
-
-		const backupPath = path.join(backupDir, buildBackupFileName(summary));
+		const backupPath = existingBackupPath ?? path.join(backupDir, buildBackupFileName(summary));
+		const wasOverwrite = Boolean(existingBackupPath);
 
 		await fs.copyFile(CODEX_AUTH_PATH, backupPath);
 		aiAuthSwitcherViewProvider?.refresh();
 
 		const action = 'Show Current Account';
 		const picked = await vscode.window.showInformationMessage(
-			`Auth backed up to ${path.basename(backupPath)}.`,
+			wasOverwrite
+				? `Updated existing backup ${path.basename(backupPath)}.`
+				: `Auth backed up to ${path.basename(backupPath)}.`,
 			action
 		);
 
