@@ -1,0 +1,145 @@
+{
+  "name": "ai-auth-switcher",
+  "displayName": "AIAuthSwitcher",
+  "description": "Back up and switch local auth files for AI coding tools",
+  "version": "0.0.1",
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "auth",
+    "account",
+    "switcher",
+    "codex",
+    "vscode"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iisyw/AIAuthSwitcher.git"
+  },
+  "homepage": "https://github.com/iisyw/AIAuthSwitcher",
+  "bugs": {
+    "url": "https://github.com/iisyw/AIAuthSwitcher/issues"
+  },
+  "engines": {
+    "vscode": "^1.110.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ai-auth-switcher.showCurrentAccount",
+        "title": "AIAuthSwitcher: Show Current Account"
+      },
+      {
+        "command": "ai-auth-switcher.backupCurrentAuth",
+        "title": "AIAuthSwitcher: Backup Current Auth"
+      },
+      {
+        "command": "ai-auth-switcher.restoreBackupItem",
+        "title": "AIAuthSwitcher: Restore Auth Backup",
+        "icon": "$(replace-all)"
+      },
+      {
+        "command": "ai-auth-switcher.deleteBackupItem",
+        "title": "AIAuthSwitcher: Delete Auth Backup",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "ai-auth-switcher.reloadTargetExtension",
+        "title": "AIAuthSwitcher: Reload Target Extension",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "ai-auth-switcher.refreshView",
+        "title": "AIAuthSwitcher: Refresh View",
+        "icon": "$(refresh)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiAuthSwitcher",
+          "title": "AIAuthSwitcher",
+          "icon": "media/ai-auth-switcher.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiAuthSwitcher": [
+        {
+          "id": "ai-auth-switcher.accountsView",
+          "name": "Accounts"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "ai-auth-switcher.refreshView",
+          "when": "view == ai-auth-switcher.accountsView",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "ai-auth-switcher.showCurrentAccount",
+          "when": "false"
+        },
+        {
+          "command": "ai-auth-switcher.backupCurrentAuth",
+          "when": "false"
+        },
+        {
+          "command": "ai-auth-switcher.restoreBackupItem",
+          "when": "false"
+        },
+        {
+          "command": "ai-auth-switcher.deleteBackupItem",
+          "when": "false"
+        },
+        {
+          "command": "ai-auth-switcher.reloadTargetExtension",
+          "when": "false"
+        },
+        {
+          "command": "ai-auth-switcher.refreshView",
+          "when": "false"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "ai-auth-switcher.deleteBackupItem",
+          "when": "view == ai-auth-switcher.accountsView && viewItem == authBackup",
+          "group": "inline"
+        },
+        {
+          "command": "ai-auth-switcher.restoreBackupItem",
+          "when": "view == ai-auth-switcher.accountsView && viewItem == authBackup",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.110.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.56.1",
+    "eslint": "^9.39.3",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
