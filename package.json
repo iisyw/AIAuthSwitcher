@@ -67,6 +67,11 @@
         "command": "ai-auth-switcher.refreshView",
         "title": "AIAuthSwitcher：刷新视图",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "ai-auth-switcher.addAccount",
+        "title": "AIAuthSwitcher：添加账号",
+        "icon": "$(add)"
       }
     ],
     "viewsContainers": {
@@ -91,7 +96,12 @@
         {
           "command": "ai-auth-switcher.refreshView",
           "when": "view == ai-auth-switcher.accountsView",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "ai-auth-switcher.addAccount",
+          "when": "view == ai-auth-switcher.accountsView",
+          "group": "navigation@2"
         }
       ],
       "commandPalette": [
@@ -125,6 +135,10 @@
         },
         {
           "command": "ai-auth-switcher.refreshView",
+          "when": "false"
+        },
+        {
+          "command": "ai-auth-switcher.addAccount",
           "when": "false"
         }
       ],
