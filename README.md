@@ -1,40 +1,42 @@
 # AIAuthSwitcher
 
-AIAuthSwitcher is a VS Code utility for backing up and switching local auth files used by AI coding tools.
+AIAuthSwitcher 是一个 VS Code 扩展，用来备份和切换 AI 编码工具使用的本地授权文件。
 
-It is designed for local-only auth management. The extension reads and writes auth files on your machine so you can switch between previously saved profiles more safely than editing JSON by hand.
+它面向纯本地的授权管理场景。扩展会在你的机器上读取和写入授权文件，让你可以比手工编辑 JSON 更安全地切换已保存的账号配置。
 
-At the moment, the implemented target is Codex only. The broader name reflects the direction of the project, not current multi-provider support.
+目前实际支持的目标只有 Codex。更宽泛的项目名只是为后续扩展预留，并不代表当前已经支持多家工具。
 
-## Features
+## 功能
 
-- Show the current account summary from a local auth file
-- Back up the current auth file into the extension backup directory
-- Switch to a previously backed up auth file
-- Delete old auth backups from the sidebar
-- Prompt to reload the VS Code window after switching accounts
+- 从本地授权文件中展示当前账号摘要
+- 将当前授权文件备份到扩展备份目录
+- 切换到之前备份过的授权文件
+- 在侧边栏中删除旧备份
+- 切换账号后提示重载 VS Code 窗口
+- 支持将多个备份导出到一个 JSON 文件
+- 支持导入单账号 JSON 或多账号合集 JSON
 
-## Current Scope
+## 当前范围
 
-- Current implementation supports Codex auth stored in `~/.codex/auth.json`
-- Other AI tools are not supported yet
-- The UI is sidebar-first; you do not need to use command-palette commands
-- Auth backups are stored in the extension's VS Code global storage directory
+- 当前实现支持存放于 `~/.codex/auth.json` 的 Codex 授权
+- 其他 AI 工具暂未支持
+- 当前以侧边栏为主入口，不需要从命令面板操作
+- 授权备份存放在扩展的 VS Code 全局存储目录中
 
-## Security
+## 安全说明
 
-- This extension handles sensitive local auth material, including tokens
-- It does not upload auth data to a remote service
-- Do not commit exported auth backups to git
-- Treat backup files like credentials
+- 这个扩展会处理敏感的本地授权信息，包括 token
+- 它不会将授权数据上传到远程服务
+- 不要把导出的授权备份提交到 git
+- 请把备份文件当作凭证来保管
 
-## What This Is Not
+## 不是什么
 
-- It is not a tool for bypassing provider limits, subscriptions, or service controls
-- It does not manage remote account state
-- It cannot force another extension to re-read auth without a reload if that extension keeps auth in memory
+- 它不是用来绕过服务商额度、订阅或平台控制的工具
+- 它不管理远端账号状态
+- 如果目标扩展把授权缓存到了内存里，它也不能在不重载窗口的情况下强制对方重新读取授权
 
-## Development
+## 开发
 
 ```bash
 npm install
@@ -42,15 +44,15 @@ npm run compile
 npm run lint
 ```
 
-To package a local VSIX:
+本地打包 VSIX：
 
 ```bash
 npx @vscode/vsce package --allow-missing-repository
 ```
 
-If you later publish this project publicly, add real values for `publisher` and `repository` in `package.json`.
+如果你后续要正式发布，请在 `package.json` 里补上真实的 `publisher` 和 `repository` 信息。
 
-## Known Issues
+## 已知限制
 
-- This extension currently focuses on local auth file switching; it does not manage remote session state
-- If another extension caches auth in memory, a reload is still required
+- 当前扩展聚焦于本地授权文件切换，不管理远端会话状态
+- 如果另一个扩展把授权缓存到了内存里，依然需要重载窗口才会生效

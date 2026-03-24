@@ -16,6 +16,8 @@ type AuthFile = {
 	};
 };
 
+type AuthBundle = Record<string, AuthFile>;
+
 type AccountSummary = {
 	email: string | null;
 	name: string | null;
@@ -77,28 +79,28 @@ class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAuthSwitch
 			const summary = await readCurrentAccountSummary();
 			const section = new AIAuthSwitcherItem(
 				'section',
-				'Current Account',
+				'当前账号',
 				vscode.TreeItemCollapsibleState.Expanded,
 				[
-					createInfoItem('Email', summary.email ?? 'unknown'),
-					createInfoItem('Name', summary.name ?? 'unknown'),
-					createInfoItem('Plan', summary.plan ?? 'unknown'),
-					createInfoItem('Account ID', summary.accountId ?? 'unknown'),
-					createInfoItem('User ID', summary.userId ?? 'unknown'),
-					createInfoItem('ID Token Expires', summary.idTokenExpiresAt ?? 'unknown'),
-					createInfoItem('Access Token Expires', summary.accessTokenExpiresAt ?? 'unknown'),
-					createInfoItem('Last Refresh', summary.lastRefresh ?? 'unknown'),
+					createInfoItem('邮箱', summary.email ?? '未知'),
+					createInfoItem('名称', summary.name ?? '未知'),
+					createInfoItem('套餐', summary.plan ?? '未知'),
+					createInfoItem('账号 ID', summary.accountId ?? '未知'),
+					createInfoItem('用户 ID', summary.userId ?? '未知'),
+					createInfoItem('ID 令牌过期时间', summary.idTokenExpiresAt ?? '未知'),
+					createInfoItem('访问令牌过期时间', summary.accessTokenExpiresAt ?? '未知'),
+					createInfoItem('最后刷新时间', summary.lastRefresh ?? '未知'),
 				]
 			);
-			section.description = summary.email ?? 'unknown';
+			section.description = summary.email ?? '未知';
 			section.iconPath = new vscode.ThemeIcon('account');
 			return section;
 		} catch (error) {
 			const section = new AIAuthSwitcherItem(
 				'section',
-				'Current Account',
+				'当前账号',
 				vscode.TreeItemCollapsibleState.Expanded,
-				[createInfoItem('Error', error instanceof Error ? error.message : String(error))]
+				[createInfoItem('错误', error instanceof Error ? error.message : String(error))]
 			);
 			section.iconPath = new vscode.ThemeIcon('warning');
 			return section;
@@ -107,13 +109,13 @@ class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAuthSwitch
 
 	private buildActionsSection(): AIAuthSwitcherItem {
 		const actions = [
-			createActionItem('Backup Current Auth', 'ai-auth-switcher.backupCurrentAuth', 'archive'),
-			createActionItem('Reload Target Extension', 'ai-auth-switcher.reloadTargetExtension', 'sync'),
+			createActionItem('备份当前授权', 'ai-auth-switcher.backupCurrentAuth', 'archive'),
+			createActionItem('重载窗口', 'ai-auth-switcher.reloadTargetExtension', 'sync'),
 		];
 
 		const section = new AIAuthSwitcherItem(
 			'section',
-			'Actions',
+			'操作',
 			vscode.TreeItemCollapsibleState.Expanded,
 			actions
 		);
@@ -127,13 +129,14 @@ class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAuthSwitch
 		const children =
 			entries.length > 0
 				? entries.map((entry) => createBackupItem(entry))
-				: [createInfoItem('Status', 'No backups yet')];
+				: [createInfoItem('状态', '暂无备份')];
 		const section = new AIAuthSwitcherItem(
 			'section',
-			'Backups',
+			'备份',
 			vscode.TreeItemCollapsibleState.Expanded,
 			children
 		);
+		section.contextValue = 'authBackupsSection';
 		section.description = `${entries.length}`;
 		section.iconPath = new vscode.ThemeIcon('files');
 		return section;
@@ -142,6 +145,7 @@ class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAuthSwitch
 
 const CODEX_AUTH_PATH = path.join(os.homedir(), '.codex', 'auth.json');
 let aiAuthSwitcherViewProvider: AIAuthSwitcherViewProvider | undefined;
+const selectedBackupPaths = new Set<string>();
 
 export function activate(context: vscode.ExtensionContext) {
 	aiAuthSwitcherViewProvider = new AIAuthSwitcherViewProvider(context);
@@ -159,6 +163,12 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('ai-auth-switcher.backupCurrentAuth', async () => {
 			await backupCurrentAuth(context);
 		}),
+		vscode.commands.registerCommand('ai-auth-switcher.importAuthFiles', async () => {
+			await importAuthFiles(context);
+		}),
+		vscode.commands.registerCommand('ai-auth-switcher.exportAllBackups', async () => {
+			await exportSelectedBackups();
+		}),
 		vscode.commands.registerCommand('ai-auth-switcher.reloadTargetExtension', async () => {
 			await reloadTargetExtension();
 		}),
@@ -173,6 +183,20 @@ export function activate(context: vscode.ExtensionContext) {
 		}),
 	];
 
+	treeView.onDidChangeCheckboxState((event) => {
+		for (const [item, state] of event.items) {
+			if (item.kind !== 'backup' || !item.authPath) {
+				continue;
+			}
+
+			if (state === vscode.TreeItemCheckboxState.Checked) {
+				selectedBackupPaths.add(item.authPath);
+			} else {
+				selectedBackupPaths.delete(item.authPath);
+			}
+		}
+	});
+
 	context.subscriptions.push(...commands);
 }
 
@@ -182,15 +206,15 @@ async function showCurrentAccount(): Promise<void> {
 	try {
 		const summary = await readCurrentAccountSummary();
 		const lines = [
-			`Email: ${summary.email ?? 'unknown'}`,
-			`Name: ${summary.name ?? 'unknown'}`,
-			`Plan: ${summary.plan ?? 'unknown'}`,
-			`Account ID: ${summary.accountId ?? 'unknown'}`,
-			`User ID: ${summary.userId ?? 'unknown'}`,
-			`ID Token Expires: ${summary.idTokenExpiresAt ?? 'unknown'}`,
-			`Access Token Expires: ${summary.accessTokenExpiresAt ?? 'unknown'}`,
-			`Last Refresh: ${summary.lastRefresh ?? 'unknown'}`,
-			`Auth File: ${CODEX_AUTH_PATH}`,
+			`邮箱: ${summary.email ?? '未知'}`,
+			`名称: ${summary.name ?? '未知'}`,
+			`套餐: ${summary.plan ?? '未知'}`,
+			`账号 ID: ${summary.accountId ?? '未知'}`,
+			`用户 ID: ${summary.userId ?? '未知'}`,
+			`ID 令牌过期时间: ${summary.idTokenExpiresAt ?? '未知'}`,
+			`访问令牌过期时间: ${summary.accessTokenExpiresAt ?? '未知'}`,
+			`最后刷新时间: ${summary.lastRefresh ?? '未知'}`,
+			`授权文件: ${CODEX_AUTH_PATH}`,
 		];
 
 		const doc = await vscode.workspace.openTextDocument({
@@ -199,7 +223,7 @@ async function showCurrentAccount(): Promise<void> {
 		});
 		await vscode.window.showTextDocument(doc, { preview: true });
 	} catch (error) {
-		await showError('Failed to read current Codex account.', error);
+		await showError('读取当前账号失败。', error);
 	}
 }
 
@@ -208,18 +232,20 @@ async function backupCurrentAuth(context: vscode.ExtensionContext): Promise<void
 		const auth = await readAuthFile(CODEX_AUTH_PATH);
 		const summary = summarizeAuth(auth);
 		const backupDir = await ensureBackupDirectory(context);
-		const existingBackupPath = await findMatchingBackup(backupDir, auth);
+		const existingBackupPath =
+			(await findMatchingBackup(backupDir, auth)) ??
+			(await findBackupByIdentity(backupDir, summary));
 		const backupPath = existingBackupPath ?? path.join(backupDir, buildBackupFileName(summary));
 		const wasOverwrite = Boolean(existingBackupPath);
 
 		await fs.copyFile(CODEX_AUTH_PATH, backupPath);
 		aiAuthSwitcherViewProvider?.refresh();
 
-		const action = 'Show Current Account';
+		const action = '查看当前账号';
 		const picked = await vscode.window.showInformationMessage(
 			wasOverwrite
-				? `Updated existing backup ${path.basename(backupPath)}.`
-				: `Auth backed up to ${path.basename(backupPath)}.`,
+				? `已更新现有备份 ${path.basename(backupPath)}。`
+				: `已备份到 ${path.basename(backupPath)}。`,
 			action
 		);
 
@@ -227,14 +253,90 @@ async function backupCurrentAuth(context: vscode.ExtensionContext): Promise<void
 			await showCurrentAccount();
 		}
 	} catch (error) {
-		await showError('Failed to back up current auth.', error);
+		await showError('备份当前授权失败。', error);
+	}
+}
+
+async function importAuthFiles(context: vscode.ExtensionContext): Promise<void> {
+	try {
+		const selectedFiles = await vscode.window.showOpenDialog({
+			canSelectMany: true,
+			canSelectFiles: true,
+			canSelectFolders: false,
+			openLabel: '导入授权文件',
+			filters: {
+				JSON: ['json'],
+			},
+		});
+
+		if (!selectedFiles || selectedFiles.length === 0) {
+			return;
+		}
+
+		const backupDir = await ensureBackupDirectory(context);
+		let importedCount = 0;
+		let updatedCount = 0;
+		let invalidCount = 0;
+		let parsedAccountCount = 0;
+		const pendingImports = new Map<string, AuthFile>();
+		const pendingFallbackImports: AuthFile[] = [];
+
+		for (const selectedFile of selectedFiles) {
+			try {
+				const payload = await readJsonFile(selectedFile.fsPath);
+				const authEntries = extractImportableAuthEntries(payload);
+
+				if (authEntries.length === 0) {
+					invalidCount += 1;
+					continue;
+				}
+
+				parsedAccountCount += authEntries.length;
+
+				for (const auth of authEntries) {
+					const summary = summarizeAuth(auth);
+					const identityKey = buildIdentityKey(summary);
+
+					if (identityKey) {
+						pendingImports.set(identityKey, auth);
+					} else {
+						pendingFallbackImports.push(auth);
+					}
+				}
+			} catch {
+				invalidCount += 1;
+			}
+		}
+
+		for (const auth of [...pendingImports.values(), ...pendingFallbackImports]) {
+			const summary = summarizeAuth(auth);
+			const existingBackupPath =
+				(await findMatchingBackup(backupDir, auth)) ??
+				(await findBackupByIdentity(backupDir, summary));
+			const targetPath = existingBackupPath ?? path.join(backupDir, buildBackupFileName(summary));
+
+			await fs.writeFile(targetPath, `${JSON.stringify(auth, null, 2)}\n`, 'utf8');
+
+			if (existingBackupPath) {
+				updatedCount += 1;
+			} else {
+				importedCount += 1;
+			}
+		}
+
+		aiAuthSwitcherViewProvider?.refresh();
+		await vscode.window.showInformationMessage(
+			`导入完成。文件 ${selectedFiles.length} 个，解析账号 ${parsedAccountCount} 个，新增 ${importedCount} 个，更新 ${updatedCount} 个，无效文件 ${invalidCount} 个。`
+		);
+	} catch (error) {
+		await showError('导入授权文件失败。', error);
 	}
 }
 
 async function restoreBackupPath(context: vscode.ExtensionContext, authPath: string | null): Promise<void> {
 	try {
 		if (!authPath) {
-			await vscode.window.showWarningMessage('No backup path was provided for restore.');
+			await vscode.window.showWarningMessage('未提供要恢复的备份路径。');
 			return;
 		}
 
@@ -244,7 +346,7 @@ async function restoreBackupPath(context: vscode.ExtensionContext, authPath: str
 		const targetAuth = await readAuthFile(authPath);
 
 		if (JSON.stringify(targetAuth) === JSON.stringify(currentAuth)) {
-			await vscode.window.showInformationMessage('This backup is already the current auth.');
+			await vscode.window.showInformationMessage('这份备份已经是当前授权。');
 			return;
 		}
 
@@ -261,25 +363,63 @@ async function restoreBackupPath(context: vscode.ExtensionContext, authPath: str
 		aiAuthSwitcherViewProvider?.refresh();
 
 		const restoredSummary = summarizeAuth(targetAuth);
-		const message = `Switched auth to ${restoredSummary.email ?? path.basename(authPath)}. Reload Window so Codex picks up the new auth.`;
-		const reload = 'Reload Window';
+		const message = `已切换到 ${restoredSummary.email ?? path.basename(authPath)}。请重载窗口，让 Codex 读取新的授权。`;
+		const reload = '重载窗口';
 		const choice = await vscode.window.showInformationMessage(message, reload);
 
 		if (choice === reload) {
 			await vscode.commands.executeCommand('workbench.action.reloadWindow');
 		}
 	} catch (error) {
-		await showError('Failed to restore auth backup.', error);
+		await showError('恢复授权备份失败。', error);
+	}
+}
+
+async function exportSelectedBackups(): Promise<void> {
+	try {
+		if (selectedBackupPaths.size === 0) {
+			await vscode.window.showInformationMessage('尚未勾选要导出的备份。');
+			return;
+		}
+
+		const exportPayload: AuthBundle = {};
+
+		for (const authPath of selectedBackupPaths) {
+			const auth = await readAuthFile(authPath);
+			const summary = summarizeAuth(auth);
+			const exportKey = buildExportKey(summary, exportPayload);
+			exportPayload[exportKey] = auth;
+		}
+
+		const targetUri = await vscode.window.showSaveDialog({
+			saveLabel: '导出已选备份',
+			defaultUri: vscode.Uri.file(path.join(os.homedir(), `ai-auth-switcher-export-${buildTimestamp()}.json`)),
+			filters: {
+				JSON: ['json'],
+			},
+		});
+
+		if (!targetUri) {
+			return;
+		}
+
+		await fs.writeFile(targetUri.fsPath, `${JSON.stringify(exportPayload, null, 2)}\n`, 'utf8');
+
+		await vscode.window.showInformationMessage(
+			`已导出 ${selectedBackupPaths.size} 个备份到 ${path.basename(targetUri.fsPath)}。`
+		);
+	} catch (error) {
+		await showError('导出已选备份失败。', error);
 	}
 }
 
 async function reloadTargetExtension(): Promise<void> {
 	const choice = await vscode.window.showInformationMessage(
-		'Codex auth changes apply after reloading the VS Code window.',
-		'Reload Window'
+		'Codex 授权变更需要重载 VS Code 窗口后才会生效。',
+		'重载窗口'
 	);
 
-	if (choice === 'Reload Window') {
+	if (choice === '重载窗口') {
 		await vscode.commands.executeCommand('workbench.action.reloadWindow');
 	}
 }
@@ -287,7 +427,7 @@ async function reloadTargetExtension(): Promise<void> {
 async function deleteBackupPath(authPath: string | null): Promise<void> {
 	try {
 		if (!authPath) {
-			await vscode.window.showWarningMessage('No backup path was provided for delete.');
+			await vscode.window.showWarningMessage('未提供要删除的备份路径。');
 			return;
 		}
 
@@ -297,24 +437,25 @@ async function deleteBackupPath(authPath: string | null): Promise<void> {
 		const isCurrent = JSON.stringify(auth) === JSON.stringify(currentAuth);
 		const targetName = summary.email ?? path.basename(authPath);
 		const message = isCurrent
-			? `Delete backup ${targetName}? This only removes the saved backup file. It will not log out the currently loaded account until you switch auth again.`
-			: `Delete backup ${targetName}?`;
+			? `确定删除备份 ${targetName} 吗？这只会删除保存的备份文件，不会立刻让当前已加载账号退出，除非你之后再次切换授权。`
+			: `确定删除备份 ${targetName} 吗？`;
 
 		const choice = await vscode.window.showWarningMessage(
 			message,
 			{ modal: true },
-			'Delete'
+			'删除'
 		);
 
-		if (choice !== 'Delete') {
+		if (choice !== '删除') {
 			return;
 		}
 
+		selectedBackupPaths.delete(authPath);
 		await fs.unlink(authPath);
 		aiAuthSwitcherViewProvider?.refresh();
-		await vscode.window.showInformationMessage(`Deleted ${path.basename(authPath)}.`);
+		await vscode.window.showInformationMessage(`已删除 ${path.basename(authPath)}。`);
 	} catch (error) {
-		await showError('Failed to delete auth backup.', error);
+		await showError('删除授权备份失败。', error);
 	}
 }
 
@@ -324,8 +465,40 @@ async function readCurrentAccountSummary(): Promise<AccountSummary> {
 }
 
 async function readAuthFile(filePath: string): Promise<AuthFile> {
+	return (await readJsonFile(filePath)) as AuthFile;
+}
+
+async function readJsonFile(filePath: string): Promise<unknown> {
 	const raw = await fs.readFile(filePath, 'utf8');
-	return JSON.parse(raw) as AuthFile;
+	return JSON.parse(raw) as unknown;
+}
+
+function isSupportedAuthFile(auth: AuthFile): boolean {
+	return Boolean(
+		auth.tokens?.id_token ||
+			auth.tokens?.access_token ||
+			auth.tokens?.refresh_token ||
+			auth.tokens?.account_id
+	);
+}
+
+function extractImportableAuthEntries(payload: unknown): AuthFile[] {
+	if (isRecord(payload) && isSupportedAuthFile(payload as AuthFile)) {
+		return [payload as AuthFile];
+	}
+
+	if (!isRecord(payload)) {
+		return [];
+	}
+
+	const entries: AuthFile[] = [];
+	for (const value of Object.values(payload)) {
+		if (isRecord(value) && isSupportedAuthFile(value as AuthFile)) {
+			entries.push(value as AuthFile);
+		}
+	}
+
+	return entries;
 }
 
 function summarizeAuth(auth: AuthFile): AccountSummary {
@@ -424,6 +597,26 @@ function buildBackupFileName(summary: AccountSummary): string {
 	return `${buildTimestamp()}-${email}-${accountId}.json`;
 }
 
+function buildExportKey(summary: AccountSummary, payload: AuthBundle): string {
+	const baseKey = (summary.email ?? summary.accountId ?? 'unknown').trim() || 'unknown';
+	if (!payload[baseKey]) {
+		return baseKey;
+	}
+
+	const suffix = safeSegment(summary.accountId ?? buildTimestamp());
+	const candidate = `${baseKey}-${suffix}`;
+	if (!payload[candidate]) {
+		return candidate;
+	}
+
+	let index = 2;
+	while (payload[`${candidate}-${index}`]) {
+		index += 1;
+	}
+
+	return `${candidate}-${index}`;
+}
+
 function buildTimestamp(): string {
 	const now = new Date();
 	const year = now.getFullYear();
@@ -455,7 +648,7 @@ async function listBackupFiles(backupDir: string): Promise<AuthBackupQuickPickIt
 			const isCurrent = JSON.stringify(auth) === currentRaw;
 			return {
 				label: summary.email ?? entry.name,
-				description: isCurrent ? 'Current' : undefined,
+				description: isCurrent ? '当前' : undefined,
 				detail: entry.name,
 				authPath,
 				isCurrent,
@@ -484,6 +677,41 @@ async function findMatchingBackup(backupDir: string, auth: AuthFile): Promise<st
 	return null;
 }
 
+async function findBackupByIdentity(backupDir: string, summary: AccountSummary): Promise<string | null> {
+	const targetKey = buildIdentityKey(summary);
+	if (!targetKey) {
+		return null;
+	}
+
+	const entries = await fs.readdir(backupDir, { withFileTypes: true });
+
+	for (const entry of entries) {
+		if (!entry.isFile() || !entry.name.endsWith('.json')) {
+			continue;
+		}
+
+		const authPath = path.join(backupDir, entry.name);
+		const existing = await readAuthFile(authPath);
+		const existingKey = buildIdentityKey(summarizeAuth(existing));
+		if (existingKey === targetKey) {
+			return authPath;
+		}
+	}
+
+	return null;
+}
+
+function buildIdentityKey(summary: AccountSummary): string | null {
+	const email = summary.email?.trim().toLowerCase() ?? '';
+	const accountId = summary.accountId?.trim().toLowerCase() ?? '';
+
+	if (!email && !accountId) {
+		return null;
+	}
+
+	return `${email}::${accountId}`;
+}
+
 function createInfoItem(label: string, value: string): AIAuthSwitcherItem {
 	const item = new AIAuthSwitcherItem('info', label, vscode.TreeItemCollapsibleState.None);
 	item.description = value;
@@ -507,29 +735,33 @@ function createBackupItem(entry: AuthBackupQuickPickItem): AIAuthSwitcherItem {
 		buildBackupDetailItems(entry),
 		entry.authPath
 	);
-	item.description = entry.isCurrent ? 'Current' : undefined;
+	item.description = entry.isCurrent ? '当前' : undefined;
 	item.tooltip = entry.detail;
 	item.iconPath = new vscode.ThemeIcon('file');
 	item.contextValue = 'authBackup';
+	item.id = entry.authPath;
+	item.checkboxState = selectedBackupPaths.has(entry.authPath)
+		? vscode.TreeItemCheckboxState.Checked
+		: vscode.TreeItemCheckboxState.Unchecked;
 	return item;
 }
 
 function buildBackupDetailItems(entry: AuthBackupQuickPickItem): AIAuthSwitcherItem[] {
 	const summary = entry.summary;
 	if (!summary) {
-		return [createInfoItem('File', entry.detail ?? 'unknown')];
+		return [createInfoItem('文件', entry.detail ?? '未知')];
 	}
 
 	return [
-		createInfoItem('Email', summary.email ?? 'unknown'),
-		createInfoItem('Name', summary.name ?? 'unknown'),
-		createInfoItem('Plan', summary.plan ?? 'unknown'),
-		createInfoItem('Account ID', summary.accountId ?? 'unknown'),
-		createInfoItem('User ID', summary.userId ?? 'unknown'),
-		createInfoItem('ID Token Expires', summary.idTokenExpiresAt ?? 'unknown'),
-		createInfoItem('Access Token Expires', summary.accessTokenExpiresAt ?? 'unknown'),
-		createInfoItem('Last Refresh', summary.lastRefresh ?? 'unknown'),
-		createInfoItem('File', entry.detail ?? 'unknown'),
+		createInfoItem('邮箱', summary.email ?? '未知'),
+		createInfoItem('名称', summary.name ?? '未知'),
+		createInfoItem('套餐', summary.plan ?? '未知'),
+		createInfoItem('账号 ID', summary.accountId ?? '未知'),
+		createInfoItem('用户 ID', summary.userId ?? '未知'),
+		createInfoItem('ID 令牌过期时间', summary.idTokenExpiresAt ?? '未知'),
+		createInfoItem('访问令牌过期时间', summary.accessTokenExpiresAt ?? '未知'),
+		createInfoItem('最后刷新时间', summary.lastRefresh ?? '未知'),
+		createInfoItem('文件', entry.detail ?? '未知'),
 	];
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "ai-auth-switcher",
   "displayName": "AIAuthSwitcher",
-  "description": "Back up and switch local auth files for AI coding tools",
+  "description": "备份并切换 AI 编码工具的本地授权文件",
   "version": "0.0.1",
   "license": "GPL-3.0-only",
   "keywords": [
@@ -32,30 +32,40 @@
     "commands": [
       {
         "command": "ai-auth-switcher.showCurrentAccount",
-        "title": "AIAuthSwitcher: Show Current Account"
+        "title": "AIAuthSwitcher：查看当前账号"
       },
       {
         "command": "ai-auth-switcher.backupCurrentAuth",
-        "title": "AIAuthSwitcher: Backup Current Auth"
+        "title": "AIAuthSwitcher：备份当前授权"
+      },
+      {
+        "command": "ai-auth-switcher.importAuthFiles",
+        "title": "AIAuthSwitcher：导入授权文件",
+        "icon": "$(git-stash)"
+      },
+      {
+        "command": "ai-auth-switcher.exportAllBackups",
+        "title": "AIAuthSwitcher：导出已选备份",
+        "icon": "$(git-stash-pop)"
       },
       {
         "command": "ai-auth-switcher.restoreBackupItem",
-        "title": "AIAuthSwitcher: Restore Auth Backup",
+        "title": "AIAuthSwitcher：恢复授权备份",
         "icon": "$(replace-all)"
       },
       {
         "command": "ai-auth-switcher.deleteBackupItem",
-        "title": "AIAuthSwitcher: Delete Auth Backup",
+        "title": "AIAuthSwitcher：删除授权备份",
         "icon": "$(trash)"
       },
       {
         "command": "ai-auth-switcher.reloadTargetExtension",
-        "title": "AIAuthSwitcher: Reload Target Extension",
+        "title": "AIAuthSwitcher：重载窗口",
         "icon": "$(sync)"
       },
       {
         "command": "ai-auth-switcher.refreshView",
-        "title": "AIAuthSwitcher: Refresh View",
+        "title": "AIAuthSwitcher：刷新视图",
         "icon": "$(refresh)"
       }
     ],
@@ -72,7 +82,7 @@
       "aiAuthSwitcher": [
         {
           "id": "ai-auth-switcher.accountsView",
-          "name": "Accounts"
+          "name": "账号"
         }
       ]
     },
@@ -94,6 +104,14 @@
           "when": "false"
         },
         {
+          "command": "ai-auth-switcher.importAuthFiles",
+          "when": "false"
+        },
+        {
+          "command": "ai-auth-switcher.exportAllBackups",
+          "when": "false"
+        },
+        {
           "command": "ai-auth-switcher.restoreBackupItem",
           "when": "false"
         },
@@ -112,12 +130,22 @@
       ],
       "view/item/context": [
         {
-          "command": "ai-auth-switcher.deleteBackupItem",
-          "when": "view == ai-auth-switcher.accountsView && viewItem == authBackup",
+          "command": "ai-auth-switcher.importAuthFiles",
+          "when": "view == ai-auth-switcher.accountsView && viewItem == authBackupsSection",
+          "group": "inline"
+        },
+        {
+          "command": "ai-auth-switcher.exportAllBackups",
+          "when": "view == ai-auth-switcher.accountsView && viewItem == authBackupsSection",
           "group": "inline"
         },
         {
           "command": "ai-auth-switcher.restoreBackupItem",
+          "when": "view == ai-auth-switcher.accountsView && viewItem == authBackup",
+          "group": "inline"
+        },
+        {
+          "command": "ai-auth-switcher.deleteBackupItem",
           "when": "view == ai-auth-switcher.accountsView && viewItem == authBackup",
           "group": "inline"
         }
