@@ -71,6 +71,39 @@ export async function importAuthFiles(
 	context: vscode.ExtensionContext,
 	refresh: () => void
 ): Promise<void> {
+	const picked = await vscode.window.showQuickPick(
+		[
+			{
+				label: '从文件导入',
+				description: '选择本地 JSON 文件导入',
+			},
+			{
+				label: '粘贴授权内容导入',
+				description: '直接粘贴 JSON 授权内容导入',
+			},
+		],
+		{
+			placeHolder: '选择导入方式',
+			ignoreFocusOut: true,
+		}
+	);
+
+	if (!picked) {
+		return;
+	}
+
+	if (picked.label === '粘贴授权内容导入') {
+		await importAuthText(context, refresh);
+		return;
+	}
+
+	await importAuthFilesFromFile(context, refresh);
+}
+
+async function importAuthFilesFromFile(
+	context: vscode.ExtensionContext,
+	refresh: () => void
+): Promise<void> {
 	try {
 		const selectedFiles = await vscode.window.showOpenDialog({
 			canSelectMany: true,
@@ -146,6 +179,71 @@ export async function importAuthFiles(
 	}
 }
 
+async function importAuthText(
+	context: vscode.ExtensionContext,
+	refresh: () => void
+): Promise<void> {
+	try {
+		const rawText = await vscode.window.showInputBox({
+			prompt:
+				'粘贴授权 JSON 内容。支持标准授权对象，或最小格式 {"access_token":"","account_id":""}，也支持这些对象组成的数组。',
+			placeHolder:
+				'示例1: {"auth_mode":"chatgpt","tokens":{"access_token":"...","refresh_token":"...","account_id":"..."}}\n示例2: {"access_token":"...","account_id":"..."}\n示例3: [{"access_token":"...","account_id":"..."},{"access_token":"...","account_id":"..."}]',
+			ignoreFocusOut: true,
+			validateInput: (value) => (value.trim() ? undefined : '授权内容不能为空。'),
+		});
+
+		if (!rawText) {
+			return;
+		}
+
+		const payload = JSON.parse(rawText) as unknown;
+		const authEntries = extractImportablePastedAuthEntries(payload);
+		if (authEntries.length === 0) {
+			await vscode.window.showWarningMessage('未识别到可导入的授权内容。');
+			return;
+		}
+
+		const backupDir = await ensureBackupDirectory(context);
+		let importedCount = 0;
+		let updatedCount = 0;
+		const pendingImports = new Map<string, AuthFile>();
+		const pendingFallbackImports: AuthFile[] = [];
+
+		for (const auth of authEntries) {
+			const summary = summarizeAuth(auth);
+			const identityKey = buildIdentityKey(summary);
+			if (identityKey) {
+				pendingImports.set(identityKey, auth);
+			} else {
+				pendingFallbackImports.push(auth);
+			}
+		}
+
+		for (const auth of [...pendingImports.values(), ...pendingFallbackImports]) {
+			const summary = summarizeAuth(auth);
+			const existingBackupPath =
+				(await findMatchingBackup(backupDir, auth)) ??
+				(await findBackupByIdentity(backupDir, summary));
+			const targetPath = existingBackupPath ?? path.join(backupDir, buildBackupFileName(summary));
+
+			await fs.writeFile(targetPath, `${JSON.stringify(auth, null, 2)}\n`, 'utf8');
+			if (existingBackupPath) {
+				updatedCount += 1;
+			} else {
+				importedCount += 1;
+			}
+		}
+
+		refresh();
+		await vscode.window.showInformationMessage(
+			`导入完成。解析账号 ${authEntries.length} 个，新增 ${importedCount} 个，更新 ${updatedCount} 个。`
+		);
+	} catch (error) {
+		await showError('粘贴导入授权失败。', error);
+	}
+}
+
 export async function restoreBackupPath(
 	context: vscode.ExtensionContext,
 	authPath: string | null,
@@ -193,12 +291,42 @@ export async function restoreBackupPath(
 }
 
 export async function exportSelectedBackups(): Promise<void> {
-	try {
-		if (selectedBackupPaths.size === 0) {
-			await vscode.window.showInformationMessage('尚未勾选要导出的备份。');
-			return;
-		}
+	if (selectedBackupPaths.size === 0) {
+		await vscode.window.showInformationMessage('尚未勾选要导出的备份。');
+		return;
+	}
 
+	const picked = await vscode.window.showQuickPick(
+		[
+			{
+				label: '导出到文件',
+				description: '按 JSON 文件保存到本地',
+			},
+			{
+				label: '打开到窗口直接复制',
+				description: '在编辑器里打开导出内容，手动复制',
+			},
+		],
+		{
+			placeHolder: '选择导出方式',
+			ignoreFocusOut: true,
+		}
+	);
+
+	if (!picked) {
+		return;
+	}
+
+	if (picked.label === '打开到窗口直接复制') {
+		await exportSelectedBackupsToEditor();
+		return;
+	}
+
+	await exportSelectedBackupsToFile();
+}
+
+async function exportSelectedBackupsToFile(): Promise<void> {
+	try {
 		const exportPayload: AuthBundle = {};
 
 		for (const authPath of selectedBackupPaths) {
@@ -228,6 +356,34 @@ export async function exportSelectedBackups(): Promise<void> {
 	} catch (error) {
 		await showError('导出已选备份失败。', error);
 	}
+}
+
+async function exportSelectedBackupsToEditor(): Promise<void> {
+	try {
+		const exportPayload = await buildExportPayload();
+		const content = `${JSON.stringify(exportPayload, null, 2)}\n`;
+		const doc = await vscode.workspace.openTextDocument({
+			content,
+			language: 'json',
+		});
+		await vscode.window.showTextDocument(doc, { preview: false });
+		await vscode.window.showInformationMessage('已在编辑器中打开导出内容，可以直接复制。');
+	} catch (error) {
+		await showError('打开导出内容失败。', error);
+	}
+}
+
+async function buildExportPayload(): Promise<AuthBundle> {
+	const exportPayload: AuthBundle = {};
+
+	for (const authPath of selectedBackupPaths) {
+		const auth = await readAuthFile(authPath);
+		const summary = summarizeAuth(auth);
+		const exportKey = buildExportKey(summary, exportPayload);
+		exportPayload[exportKey] = auth;
+	}
+
+	return exportPayload;
 }
 
 export async function reloadTargetExtension(): Promise<void> {
@@ -335,6 +491,27 @@ export async function saveAddedAuth(
 	auth: AuthFile,
 	refresh: () => void
 ): Promise<void> {
+	await persistAuthFile(context, auth, refresh);
+}
+
+export async function persistCurrentAuth(
+	context: vscode.ExtensionContext,
+	auth: AuthFile,
+	refresh: () => void
+): Promise<void> {
+	await persistAuthFile(context, auth, refresh);
+}
+
+export async function writeAuthFile(filePath: string, auth: AuthFile): Promise<void> {
+	await fs.mkdir(path.dirname(filePath), { recursive: true });
+	await fs.writeFile(filePath, `${JSON.stringify(auth, null, 2)}\n`, 'utf8');
+}
+
+async function persistAuthFile(
+	context: vscode.ExtensionContext,
+	auth: AuthFile,
+	refresh: () => void
+): Promise<void> {
 	await fs.mkdir(path.dirname(CODEX_AUTH_PATH), { recursive: true });
 	const backupDir = await ensureBackupDirectory(context);
 	const summary = summarizeAuth(auth);
@@ -376,6 +553,51 @@ function extractImportableAuthEntries(payload: unknown): AuthFile[] {
 	return entries;
 }
 
+function extractImportablePastedAuthEntries(payload: unknown): AuthFile[] {
+	const direct = normalizeMinimalImportedAuth(payload);
+	if (direct) {
+		return [direct];
+	}
+
+	if (Array.isArray(payload)) {
+		return payload
+			.map((item) => normalizeMinimalImportedAuth(item))
+			.filter((item): item is AuthFile => item !== null);
+	}
+
+	return extractImportableAuthEntries(payload);
+}
+
+function normalizeMinimalImportedAuth(payload: unknown): AuthFile | null {
+	if (!isRecord(payload)) {
+		return null;
+	}
+
+	if (isSupportedAuthFile(payload as AuthFile)) {
+		return payload as AuthFile;
+	}
+
+	const accessToken = stringValue(payload.access_token);
+	const accountId = stringValue(payload.account_id);
+	const refreshToken = stringValue(payload.refresh_token);
+	const idToken = stringValue(payload.id_token);
+	if (!accessToken || !accountId) {
+		return null;
+	}
+
+	return {
+		auth_mode: 'chatgpt',
+		OPENAI_API_KEY: '',
+		last_refresh: typeof payload.last_refresh === 'string' ? payload.last_refresh : null,
+		tokens: {
+			access_token: accessToken,
+			account_id: accountId,
+			refresh_token: refreshToken ?? undefined,
+			id_token: idToken ?? undefined,
+		},
+	};
+}
+
 function buildBackupFileName(summary: AccountSummary): string {
 	const email = safeSegment(summary.email ?? 'unknown');
 	const accountId = safeSegment(summary.accountId ?? 'no-account-id');
@@ -411,6 +633,10 @@ function buildIdentityKey(summary: AccountSummary): string | null {
 	}
 
 	return `${email}::${accountId}`;
+}
+
+function stringValue(value: unknown): string | null {
+	return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
 async function readJsonFile(filePath: string): Promise<unknown> {

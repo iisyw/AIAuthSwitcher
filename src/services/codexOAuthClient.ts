@@ -170,6 +170,32 @@ export async function performCodexOAuthLogin(
 	return buildAuthFile(email, tokens);
 }
 
+export async function refreshCodexAuthTokens(auth: AuthFile): Promise<AuthFile> {
+	const refreshToken = auth.tokens?.refresh_token?.trim() ?? '';
+	if (!refreshToken) {
+		throw new Error('当前账号缺少 refresh_token。');
+	}
+
+	const response = await fetch(`${OPENAI_AUTH_BASE}/oauth/token`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/x-www-form-urlencoded',
+			Accept: 'application/json',
+		},
+		body: new URLSearchParams({
+			grant_type: 'refresh_token',
+			refresh_token: refreshToken,
+			client_id: OAUTH_CLIENT_ID,
+		}),
+	});
+	if (!response.ok) {
+		throw new Error(`刷新授权失败: ${response.status} ${trimForError(await response.text())}`);
+	}
+
+	const tokens = (await response.json()) as Record<string, unknown>;
+	return buildAuthFileFromExisting(auth, tokens);
+}
+
 class HttpSession {
 	private readonly cookies = new Map<string, string>();
 
@@ -725,16 +751,35 @@ async function followRedirectsForCode(
 }
 
 function buildAuthFile(email: string, tokens: Record<string, unknown>): AuthFile {
+	return buildAuthFileFromExisting(
+		{
+			auth_mode: 'chatgpt',
+			OPENAI_API_KEY: '',
+		},
+		tokens
+	);
+}
+
+function buildAuthFileFromExisting(existingAuth: AuthFile, tokens: Record<string, unknown>): AuthFile {
 	const accessToken = typeof tokens.access_token === 'string' ? tokens.access_token : '';
-	const refreshToken = typeof tokens.refresh_token === 'string' ? tokens.refresh_token : '';
-	const idToken = typeof tokens.id_token === 'string' ? tokens.id_token : '';
+	const refreshToken =
+		typeof tokens.refresh_token === 'string' && tokens.refresh_token
+			? tokens.refresh_token
+			: existingAuth.tokens?.refresh_token ?? '';
+	const idToken =
+		typeof tokens.id_token === 'string' && tokens.id_token
+			? tokens.id_token
+			: existingAuth.tokens?.id_token ?? '';
 	const payload = decodeJwtPayload(accessToken);
 	const authClaims = isRecord(payload['https://api.openai.com/auth']) ? payload['https://api.openai.com/auth'] : {};
-	const accountId = typeof authClaims.chatgpt_account_id === 'string' ? authClaims.chatgpt_account_id : '';
+	const accountId =
+		typeof authClaims.chatgpt_account_id === 'string' && authClaims.chatgpt_account_id
+			? authClaims.chatgpt_account_id
+			: existingAuth.tokens?.account_id ?? '';
 
 	return {
-		auth_mode: 'chatgpt',
-		OPENAI_API_KEY: '',
+		auth_mode: existingAuth.auth_mode ?? 'chatgpt',
+		OPENAI_API_KEY: existingAuth.OPENAI_API_KEY ?? '',
 		tokens: {
 			id_token: idToken,
 			access_token: accessToken,

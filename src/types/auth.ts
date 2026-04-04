@@ -16,6 +16,27 @@ export type AuthFile = {
 
 export type AuthBundle = Record<string, AuthFile>;
 
+export type CodexRateLimitWindow = {
+	usedPercent: number | null;
+	resetAt: string | null;
+	resetAfterSeconds: number | null;
+	limitWindowSeconds: number | null;
+};
+
+export type CodexUsageSummary = {
+	planType: string | null;
+	isAvailable: boolean | null;
+	upstreamStatus: number | null;
+	email: string | null;
+	accountId: string | null;
+	userId: string | null;
+	lastFetchedAt: string | null;
+	fiveHourWindow: CodexRateLimitWindow | null;
+	weeklyWindow: CodexRateLimitWindow | null;
+	message: string | null;
+	raw: unknown;
+};
+
 export type AccountSummary = {
 	email: string | null;
 	name: string | null;

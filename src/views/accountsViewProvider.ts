@@ -5,8 +5,11 @@ import {
 	listBackupFiles,
 	readCurrentAccountSummary,
 } from '../services/authStorage';
+import { fetchCodexUsageSummary, fetchCodexUsageSummaryForAuth } from '../services/codexUsage';
+import { CodexUsageSummary } from '../types/auth';
 
 type ItemKind = 'section' | 'info' | 'action' | 'backup';
+const BACKUP_USAGE_CACHE_KEY = 'backupCodexUsageCache';
 
 export class AIAuthSwitcherItem extends vscode.TreeItem {
 	constructor(
@@ -23,11 +26,99 @@ export class AIAuthSwitcherItem extends vscode.TreeItem {
 export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAuthSwitcherItem> {
 	private readonly changeEmitter = new vscode.EventEmitter<AIAuthSwitcherItem | undefined | void>();
 	readonly onDidChangeTreeData = this.changeEmitter.event;
+	private codexUsage: CodexUsageSummary | null = null;
+	private codexUsageError: string | null = null;
+	private codexUsageLoading = false;
+	private codexUsageTask: Promise<void> | null = null;
+	private readonly backupUsageByPath = new Map<string, CodexUsageSummary>();
+	private readonly backupUsageErrorByPath = new Map<string, string>();
+	private readonly backupUsageLoadingPaths = new Set<string>();
 
 	constructor(private readonly context: vscode.ExtensionContext) {}
 
+	async initialize(): Promise<void> {
+		const cached = this.context.globalState.get<Record<string, CodexUsageSummary>>(BACKUP_USAGE_CACHE_KEY);
+		if (!cached || typeof cached !== 'object') {
+			return;
+		}
+
+		for (const [authPath, summary] of Object.entries(cached)) {
+			if (summary && typeof summary === 'object') {
+				this.backupUsageByPath.set(authPath, summary);
+			}
+		}
+		this.refresh();
+	}
+
 	refresh(): void {
 		this.changeEmitter.fire();
+	}
+
+	getCodexUsageError(): string | null {
+		return this.codexUsageError;
+	}
+
+	getBackupCodexUsageError(authPath: string): string | null {
+		return this.backupUsageErrorByPath.get(authPath) ?? null;
+	}
+
+	async refreshCodexUsage(force = false): Promise<void> {
+		if (force) {
+			this.codexUsage = null;
+			this.codexUsageError = null;
+		}
+		if (!force && (this.codexUsage || this.codexUsageError)) {
+			return;
+		}
+		if (this.codexUsageTask) {
+			await this.codexUsageTask;
+			return;
+		}
+
+		this.codexUsageLoading = true;
+		this.codexUsageError = null;
+		this.codexUsageTask = (async () => {
+			try {
+				this.codexUsage = await fetchCodexUsageSummary();
+			} catch (error) {
+				this.codexUsage = null;
+				this.codexUsageError = error instanceof Error ? error.message : String(error);
+			} finally {
+				this.codexUsageLoading = false;
+				this.codexUsageTask = null;
+			}
+		})();
+
+		await this.codexUsageTask;
+	}
+
+	async refreshBackupCodexUsage(
+		authPath: string,
+		runFetch: (authPath: string) => Promise<{ summary: CodexUsageSummary; authChanged: boolean }>
+	): Promise<void> {
+		if (!authPath) {
+			return;
+		}
+		this.backupUsageLoadingPaths.add(authPath);
+		this.backupUsageErrorByPath.delete(authPath);
+		this.refresh();
+
+		try {
+			const result = await runFetch(authPath);
+			this.backupUsageByPath.set(authPath, result.summary);
+			this.backupUsageErrorByPath.delete(authPath);
+			await this.saveBackupUsageCache();
+		} catch (error) {
+			this.backupUsageByPath.delete(authPath);
+			this.backupUsageErrorByPath.set(
+				authPath,
+				error instanceof Error ? error.message : String(error)
+			);
+			await this.saveBackupUsageCache();
+		} finally {
+			this.backupUsageLoadingPaths.delete(authPath);
+			this.refresh();
+		}
 	}
 
 	async getChildren(element?: AIAuthSwitcherItem): Promise<AIAuthSwitcherItem[]> {
@@ -36,9 +127,18 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 		}
 
 		const currentAccountSection = await this.buildCurrentAccountSection();
+		const codexUsageSection = await this.buildCodexUsageSection();
 		const actionsSection = this.buildActionsSection();
 		const backupsSection = await this.buildBackupsSection();
-		return [currentAccountSection, actionsSection, backupsSection];
+		const codexRoot = new AIAuthSwitcherItem(
+			'section',
+			'CODEX',
+			vscode.TreeItemCollapsibleState.Expanded,
+			[currentAccountSection, codexUsageSection, actionsSection, backupsSection]
+		);
+		codexRoot.iconPath = new vscode.ThemeIcon('server');
+		codexRoot.id = 'codex-root';
+		return [codexRoot];
 	}
 
 	getTreeItem(element: AIAuthSwitcherItem): vscode.TreeItem {
@@ -50,7 +150,7 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 			const summary = await readCurrentAccountSummary();
 			const section = new AIAuthSwitcherItem(
 				'section',
-				'当前账号',
+				'当前账号信息',
 				vscode.TreeItemCollapsibleState.Expanded,
 				[
 					createInfoItem('邮箱', summary.email ?? '未知'),
@@ -58,9 +158,6 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 					createInfoItem('套餐', summary.plan ?? '未知'),
 					createInfoItem('账号 ID', summary.accountId ?? '未知'),
 					createInfoItem('用户 ID', summary.userId ?? '未知'),
-					createInfoItem('ID 令牌过期时间', summary.idTokenExpiresAt ?? '未知'),
-					createInfoItem('访问令牌过期时间', summary.accessTokenExpiresAt ?? '未知'),
-					createInfoItem('最后刷新时间', summary.lastRefresh ?? '未知'),
 				]
 			);
 			section.description = summary.email ?? '未知';
@@ -69,7 +166,7 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 		} catch (error) {
 			const section = new AIAuthSwitcherItem(
 				'section',
-				'当前账号',
+				'当前账号信息',
 				vscode.TreeItemCollapsibleState.Expanded,
 				[createInfoItem('错误', error instanceof Error ? error.message : String(error))]
 			);
@@ -80,6 +177,8 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 
 	private buildActionsSection(): AIAuthSwitcherItem {
 		const actions = [
+			createActionItem('刷新 Codex 授权', 'ai-auth-switcher.refreshCodexAuth', 'key'),
+			createActionItem('查询 Codex 用量', 'ai-auth-switcher.fetchCodexUsage', 'pulse'),
 			createActionItem('备份当前授权', 'ai-auth-switcher.backupCurrentAuth', 'archive'),
 			createActionItem('重载窗口', 'ai-auth-switcher.reloadTargetExtension', 'sync'),
 		];
@@ -94,16 +193,58 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 		return section;
 	}
 
+	private async buildCodexUsageSection(): Promise<AIAuthSwitcherItem> {
+		await this.refreshCodexUsage();
+
+		if (this.codexUsageLoading && !this.codexUsage && !this.codexUsageError) {
+			return createSection('Codex 用量', [createInfoItem('状态', '加载中...')], 'pulse');
+		}
+
+		if (this.codexUsageError) {
+			return createSection('当前账号Codex用量', [createInfoItem('错误', this.codexUsageError)], 'warning');
+		}
+
+		if (!this.codexUsage) {
+			return createSection('当前账号Codex用量', [createInfoItem('状态', '暂无数据')], 'pulse');
+		}
+
+		const usage = this.codexUsage;
+		const section = createSection(
+			'当前账号Codex用量',
+			[
+				createInfoItem('套餐', formatPlanType(usage.planType)),
+				createInfoItem('状态', formatAvailability(usage.isAvailable)),
+				createInfoItem('上游状态码', usage.upstreamStatus?.toString() ?? '未知'),
+				createInfoItem('5小时窗口已用', formatPercent(usage.fiveHourWindow?.usedPercent)),
+				createInfoItem('5小时窗口重置时间', usage.fiveHourWindow?.resetAt ?? '未知'),
+				createInfoItem('每周窗口已用', formatPercent(usage.weeklyWindow?.usedPercent)),
+				createInfoItem('每周窗口重置时间', usage.weeklyWindow?.resetAt ?? '未知'),
+				createInfoItem('上次查询时间', usage.lastFetchedAt ?? '未知'),
+				createInfoItem('查询结果', usage.message ?? '正常'),
+			],
+			'pulse'
+		);
+		section.description = formatAvailability(usage.isAvailable);
+		return section;
+	}
+
 	private async buildBackupsSection(): Promise<AIAuthSwitcherItem> {
 		const backupDir = await ensureBackupDirectory(this.context);
 		const entries = await listBackupFiles(backupDir);
 		const children =
 			entries.length > 0
-				? entries.map((entry) => createBackupItem(entry))
+				? entries.map((entry) =>
+						createBackupItem(
+							entry,
+							this.backupUsageByPath.get(entry.authPath) ?? null,
+							this.backupUsageErrorByPath.get(entry.authPath) ?? null,
+							this.backupUsageLoadingPaths.has(entry.authPath)
+						)
+				  )
 				: [createInfoItem('状态', '暂无备份')];
 		const section = new AIAuthSwitcherItem(
 			'section',
-			'备份',
+			'账号备份列表',
 			vscode.TreeItemCollapsibleState.Expanded,
 			children
 		);
@@ -112,6 +253,17 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 		section.iconPath = new vscode.ThemeIcon('files');
 		return section;
 	}
+
+	private async saveBackupUsageCache(): Promise<void> {
+		const payload = Object.fromEntries(this.backupUsageByPath.entries());
+		await this.context.globalState.update(BACKUP_USAGE_CACHE_KEY, payload);
+	}
+}
+
+function createSection(label: string, children: AIAuthSwitcherItem[], iconId: string): AIAuthSwitcherItem {
+	const section = new AIAuthSwitcherItem('section', label, vscode.TreeItemCollapsibleState.Expanded, children);
+	section.iconPath = new vscode.ThemeIcon(iconId);
+	return section;
 }
 
 function createInfoItem(label: string, value: string): AIAuthSwitcherItem {
@@ -129,6 +281,40 @@ function createActionItem(label: string, command: string, iconId: string): AIAut
 	return item;
 }
 
+function formatAvailability(value: boolean | null): string {
+	if (value === true) {
+		return '可用';
+	}
+	if (value === false) {
+		return '受限';
+	}
+	return '待确认';
+}
+
+function formatPercent(value: number | null | undefined): string {
+	if (typeof value !== 'number' || Number.isNaN(value)) {
+		return '未知';
+	}
+	return `${Math.max(0, Math.min(100, value)).toFixed(0)}%`;
+}
+
+function formatPlanType(value: string | null): string {
+	switch (value) {
+		case 'free':
+			return 'Free';
+		case 'plus':
+			return 'Plus';
+		case 'pro':
+			return 'Pro';
+		case 'team':
+			return 'Team';
+		case 'enterprise':
+			return 'Enterprise';
+		default:
+			return value ?? '未知';
+	}
+}
+
 function createBackupItem(entry: {
 	label: string;
 	detail?: string;
@@ -144,12 +330,12 @@ function createBackupItem(entry: {
 		accessTokenExpiresAt: string | null;
 		lastRefresh: string | null;
 	};
-}): AIAuthSwitcherItem {
+}, usage: CodexUsageSummary | null, usageError: string | null, usageLoading: boolean): AIAuthSwitcherItem {
 	const item = new AIAuthSwitcherItem(
 		'backup',
 		entry.label,
 		vscode.TreeItemCollapsibleState.Collapsed,
-		buildBackupDetailItems(entry),
+		buildBackupDetailItems(entry, usage, usageError, usageLoading),
 		entry.authPath
 	);
 	item.description = entry.isCurrent ? '当前' : undefined;
@@ -175,21 +361,53 @@ function buildBackupDetailItems(entry: {
 		accessTokenExpiresAt: string | null;
 		lastRefresh: string | null;
 	};
-}): AIAuthSwitcherItem[] {
+}, usage: CodexUsageSummary | null, usageError: string | null, usageLoading: boolean): AIAuthSwitcherItem[] {
 	const summary = entry.summary;
+	const items: AIAuthSwitcherItem[] = [];
+
 	if (!summary) {
-		return [createInfoItem('文件', entry.detail ?? '未知')];
+		items.push(createInfoItem('文件', entry.detail ?? '未知'));
+		return appendBackupUsageItems(items, usage, usageError, usageLoading);
 	}
 
-	return [
+	items.push(
 		createInfoItem('邮箱', summary.email ?? '未知'),
 		createInfoItem('名称', summary.name ?? '未知'),
 		createInfoItem('套餐', summary.plan ?? '未知'),
 		createInfoItem('账号 ID', summary.accountId ?? '未知'),
 		createInfoItem('用户 ID', summary.userId ?? '未知'),
-		createInfoItem('ID 令牌过期时间', summary.idTokenExpiresAt ?? '未知'),
-		createInfoItem('访问令牌过期时间', summary.accessTokenExpiresAt ?? '未知'),
-		createInfoItem('最后刷新时间', summary.lastRefresh ?? '未知'),
-		createInfoItem('文件', entry.detail ?? '未知'),
-	];
+		createInfoItem('文件', entry.detail ?? '未知')
+	);
+	return appendBackupUsageItems(items, usage, usageError, usageLoading);
+}
+
+function appendBackupUsageItems(
+	items: AIAuthSwitcherItem[],
+	usage: CodexUsageSummary | null,
+	usageError: string | null,
+	usageLoading: boolean
+): AIAuthSwitcherItem[] {
+	if (usageLoading) {
+		items.push(createInfoItem('Codex用量', '查询中...'));
+		return items;
+	}
+
+	if (usageError) {
+		items.push(createInfoItem('Codex用量错误', usageError));
+		return items;
+	}
+
+	if (!usage) {
+		return items;
+	}
+
+	items.push(createInfoItem('Codex套餐', formatPlanType(usage.planType)));
+	items.push(createInfoItem('Codex状态', formatAvailability(usage.isAvailable)));
+	items.push(createInfoItem('5小时窗口已用', formatPercent(usage.fiveHourWindow?.usedPercent)));
+	items.push(createInfoItem('5小时窗口重置时间', usage.fiveHourWindow?.resetAt ?? '未知'));
+	items.push(createInfoItem('每周窗口已用', formatPercent(usage.weeklyWindow?.usedPercent)));
+	items.push(createInfoItem('每周窗口重置时间', usage.weeklyWindow?.resetAt ?? '未知'));
+	items.push(createInfoItem('Codex查询结果', usage.message ?? '正常'));
+	items.push(createInfoItem('上次查询时间', usage.lastFetchedAt ?? '未知'));
+	return items;
 }
