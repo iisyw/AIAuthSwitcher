@@ -15,6 +15,9 @@ export function summarizeAuth(auth: AuthFile): AccountSummary {
 		idTokenExpiresAt: formatJwtExpiry(idTokenPayload?.exp),
 		accessTokenExpiresAt: formatJwtExpiry(accessTokenPayload?.exp),
 		lastRefresh: formatLastRefresh(auth.last_refresh),
+		hasAccessToken: Boolean(auth.tokens?.access_token?.trim()),
+		hasRefreshToken: Boolean(auth.tokens?.refresh_token?.trim()),
+		hasAccountId: Boolean(auth.tokens?.account_id?.trim()),
 	};
 }
 

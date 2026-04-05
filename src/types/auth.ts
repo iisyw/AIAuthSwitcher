@@ -46,6 +46,9 @@ export type AccountSummary = {
 	idTokenExpiresAt: string | null;
 	accessTokenExpiresAt: string | null;
 	lastRefresh: string | null;
+	hasAccessToken: boolean;
+	hasRefreshToken: boolean;
+	hasAccountId: boolean;
 };
 
 export type AuthBackupQuickPickItem = vscode.QuickPickItem & {

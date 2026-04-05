@@ -6,7 +6,7 @@ import {
 	readCurrentAccountSummary,
 } from '../services/authStorage';
 import { fetchCodexUsageSummary, fetchCodexUsageSummaryForAuth } from '../services/codexUsage';
-import { CodexUsageSummary } from '../types/auth';
+import { AccountSummary, CodexUsageSummary } from '../types/auth';
 
 type ItemKind = 'section' | 'info' | 'action' | 'backup';
 const BACKUP_USAGE_CACHE_KEY = 'backupCodexUsageCache';
@@ -33,6 +33,7 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 	private readonly backupUsageByPath = new Map<string, CodexUsageSummary>();
 	private readonly backupUsageErrorByPath = new Map<string, string>();
 	private readonly backupUsageLoadingPaths = new Set<string>();
+	private backupCountdownRefreshTimer: NodeJS.Timeout | null = null;
 
 	constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -51,6 +52,7 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 	}
 
 	refresh(): void {
+		this.scheduleBackupCountdownRefresh();
 		this.changeEmitter.fire();
 	}
 
@@ -80,6 +82,7 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 		this.codexUsageTask = (async () => {
 			try {
 				this.codexUsage = await fetchCodexUsageSummary();
+				await this.syncCurrentBackupUsageFromCurrentAccount();
 			} catch (error) {
 				this.codexUsage = null;
 				this.codexUsageError = error instanceof Error ? error.message : String(error);
@@ -158,6 +161,8 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 					createInfoItem('套餐', summary.plan ?? '未知'),
 					createInfoItem('账号 ID', summary.accountId ?? '未知'),
 					createInfoItem('用户 ID', summary.userId ?? '未知'),
+					createInfoItem('授权健康度', getTokenHealthStatus(summary).label),
+					createInfoItem('自动续期', summary.hasRefreshToken ? '支持' : '不支持'),
 				]
 			);
 			section.description = summary.email ?? '未知';
@@ -268,6 +273,44 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 	private async saveBackupUsageCache(): Promise<void> {
 		const payload = Object.fromEntries(this.backupUsageByPath.entries());
 		await this.context.globalState.update(BACKUP_USAGE_CACHE_KEY, payload);
+	}
+
+	private async syncCurrentBackupUsageFromCurrentAccount(): Promise<void> {
+		if (!this.codexUsage) {
+			return;
+		}
+
+		const backupDir = await ensureBackupDirectory(this.context);
+		const entries = await listBackupFiles(backupDir);
+		const currentEntry = entries.find((entry) => entry.isCurrent);
+		if (!currentEntry) {
+			return;
+		}
+
+		this.backupUsageByPath.set(currentEntry.authPath, this.codexUsage);
+		this.backupUsageErrorByPath.delete(currentEntry.authPath);
+		await this.saveBackupUsageCache();
+	}
+
+	private scheduleBackupCountdownRefresh(): void {
+		if (this.backupCountdownRefreshTimer) {
+			clearTimeout(this.backupCountdownRefreshTimer);
+			this.backupCountdownRefreshTimer = null;
+		}
+
+		const nextRefreshMs = getNextBackupCountdownRefreshMs(
+			this.backupUsageByPath,
+			this.backupUsageErrorByPath,
+			this.backupUsageLoadingPaths
+		);
+		if (nextRefreshMs === null) {
+			return;
+		}
+
+		this.backupCountdownRefreshTimer = setTimeout(() => {
+			this.backupCountdownRefreshTimer = null;
+			this.refresh();
+		}, nextRefreshMs);
 	}
 }
 
@@ -386,11 +429,14 @@ function createBackupItem(entry: {
 		idTokenExpiresAt: string | null;
 		accessTokenExpiresAt: string | null;
 		lastRefresh: string | null;
+		hasAccessToken: boolean;
+		hasRefreshToken: boolean;
+		hasAccountId: boolean;
 	};
 }, usage: CodexUsageSummary | null, usageError: string | null, usageLoading: boolean): AIAuthSwitcherItem {
 	const item = new AIAuthSwitcherItem(
 		'backup',
-		formatBackupItemLabel(entry.label, usage, usageError, usageLoading),
+		formatBackupItemLabel(entry.label, entry.summary ?? null, usage, usageError, usageLoading),
 		vscode.TreeItemCollapsibleState.Collapsed,
 		buildBackupDetailItems(entry, usage, usageError, usageLoading),
 		entry.authPath
@@ -416,6 +462,9 @@ function buildBackupDetailItems(entry: {
 		idTokenExpiresAt: string | null;
 		accessTokenExpiresAt: string | null;
 		lastRefresh: string | null;
+		hasAccessToken: boolean;
+		hasRefreshToken: boolean;
+		hasAccountId: boolean;
 	};
 }, usage: CodexUsageSummary | null, usageError: string | null, usageLoading: boolean): AIAuthSwitcherItem[] {
 	const summary = entry.summary;
@@ -426,12 +475,19 @@ function buildBackupDetailItems(entry: {
 		return appendBackupUsageItems(items, usage, usageError, usageLoading);
 	}
 
+	const tokenHealth = getTokenHealthStatus(summary);
 	items.push(
 		createInfoItem('邮箱', summary.email ?? '未知'),
 		createInfoItem('名称', summary.name ?? '未知'),
 		createInfoItem('套餐', summary.plan ?? '未知'),
 		createInfoItem('账号 ID', summary.accountId ?? '未知'),
-		createInfoItem('用户 ID', summary.userId ?? '未知')
+		createInfoItem('用户 ID', summary.userId ?? '未知'),
+		createInfoItem('授权健康度', tokenHealth.label),
+		createInfoItem('健康说明', tokenHealth.reason),
+		createInfoItem('Access Token 到期时间', summary.accessTokenExpiresAt ?? '未知'),
+		createInfoItem('距 Access Token 到期', formatAccessTokenCountdown(summary)),
+		createInfoItem('Refresh Token', summary.hasRefreshToken ? '已提供' : '缺失'),
+		createInfoItem('自动续期', summary.hasRefreshToken ? '支持' : '不支持')
 	);
 	return appendBackupUsageItems(items, usage, usageError, usageLoading);
 }
@@ -470,6 +526,7 @@ function appendBackupUsageItems(
 
 function formatBackupItemLabel(
 	label: string,
+	summary: AccountSummary | null,
 	usage: CodexUsageSummary | null,
 	usageError: string | null,
 	usageLoading: boolean
@@ -482,10 +539,150 @@ function formatBackupItemLabel(
 		return `失败 | ${label}`;
 	}
 
-	const weeklyUsedPercent = usage?.weeklyWindow?.usedPercent;
-	if (typeof weeklyUsedPercent === 'number' && Number.isFinite(weeklyUsedPercent)) {
-		return `${formatPercent(weeklyUsedPercent)} | ${label}`;
+	const healthText = getTokenHealthStatus(summary).label;
+	return `${formatPercent(usage?.weeklyWindow?.usedPercent)} | ${formatWeeklyResetCountdown(usage)} | ${healthText} | ${label}`;
+}
+
+function getTokenHealthStatus(summary: AccountSummary | null): { label: string; reason: string } {
+	if (!summary) {
+		return { label: '未知', reason: '缺少账号摘要信息。' };
 	}
 
-	return `未知 | ${label}`;
+	if (!summary.hasAccessToken || !summary.hasAccountId) {
+		return {
+			label: '异常',
+			reason: `缺少${[
+				!summary.hasAccessToken ? 'access_token' : null,
+				!summary.hasAccountId ? 'account_id' : null,
+			]
+				.filter((value): value is string => value !== null)
+				.join('、')}。`,
+		};
+	}
+
+	const accessTokenExpiry = parseLocalDateTime(summary.accessTokenExpiresAt);
+	if (!summary.hasRefreshToken) {
+		if (accessTokenExpiry && accessTokenExpiry.getTime() <= Date.now()) {
+			return { label: '已过期', reason: '缺少 refresh_token，且 access_token 已过期。' };
+		}
+		return { label: '不可续期', reason: '缺少 refresh_token，access_token 过期后无法自动续期。' };
+	}
+
+	if (!accessTokenExpiry) {
+		return { label: '健康', reason: '包含 refresh_token，可自动续期。' };
+	}
+
+	const diffMs = accessTokenExpiry.getTime() - Date.now();
+	if (diffMs <= 0) {
+		return { label: '已过期', reason: 'access_token 已过期，但存在 refresh_token，可尝试自动续期。' };
+	}
+	if (diffMs <= 24 * 60 * 60 * 1000) {
+		return { label: '临期', reason: 'access_token 将在 24 小时内过期，但存在 refresh_token。' };
+	}
+	return { label: '健康', reason: 'access_token 状态正常，且存在 refresh_token。' };
+}
+
+function formatAccessTokenCountdown(summary: AccountSummary): string {
+	const accessTokenExpiry = parseLocalDateTime(summary.accessTokenExpiresAt);
+	if (!accessTokenExpiry) {
+		return '未知';
+	}
+
+	const diffMs = accessTokenExpiry.getTime() - Date.now();
+	if (diffMs <= 0) {
+		return '已过期';
+	}
+
+	return formatDuration(diffMs);
+}
+
+function formatWeeklyResetCountdown(usage: CodexUsageSummary | null): string {
+	const resetAt = parseLocalDateTime(usage?.weeklyWindow?.resetAt ?? null);
+	if (!resetAt) {
+		return '未知';
+	}
+
+	const diffMs = resetAt.getTime() - Date.now();
+	if (diffMs <= 0) {
+		return '已至';
+	}
+
+	return formatDuration(diffMs);
+}
+
+function getNextBackupCountdownRefreshMs(
+	usageByPath: ReadonlyMap<string, CodexUsageSummary>,
+	errorByPath: ReadonlyMap<string, string>,
+	loadingPaths: ReadonlySet<string>
+): number | null {
+	let nextRefreshMs: number | null = null;
+
+	for (const [authPath, usage] of usageByPath.entries()) {
+		if (errorByPath.has(authPath) || loadingPaths.has(authPath)) {
+			continue;
+		}
+
+		const resetAt = parseLocalDateTime(usage.weeklyWindow?.resetAt ?? null);
+		if (!resetAt) {
+			continue;
+		}
+
+		const diffMs = resetAt.getTime() - Date.now();
+		if (diffMs <= 0) {
+			continue;
+		}
+
+		const candidateMs = getCountdownRefreshIntervalMs(diffMs);
+		if (nextRefreshMs === null || candidateMs < nextRefreshMs) {
+			nextRefreshMs = candidateMs;
+		}
+	}
+
+	return nextRefreshMs;
+}
+
+function getCountdownRefreshIntervalMs(diffMs: number): number {
+	if (diffMs > 60 * 60 * 1000) {
+		return 10 * 60 * 1000;
+	}
+	if (diffMs > 5 * 60 * 1000) {
+		return 3 * 60 * 1000;
+	}
+	if (diffMs > 60 * 1000) {
+		return 60 * 1000;
+	}
+	return 10 * 1000;
+}
+
+function parseLocalDateTime(value: string | null): Date | null {
+	if (!value) {
+		return null;
+	}
+
+	const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(value.trim());
+	if (!match) {
+		return null;
+	}
+
+	const [, year, month, day, hour, minute, second] = match;
+	const date = new Date(
+		Number(year),
+		Number(month) - 1,
+		Number(day),
+		Number(hour),
+		Number(minute),
+		Number(second)
+	);
+	return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatDuration(diffMs: number): string {
+	const totalSeconds = Math.floor(diffMs / 1000);
+	const days = Math.floor(totalSeconds / (24 * 60 * 60));
+	const hours = Math.floor((totalSeconds % (24 * 60 * 60)) / (60 * 60));
+	const minutes = Math.floor((totalSeconds % (60 * 60)) / 60);
+	const seconds = totalSeconds % 60;
+	const hhmmss = [hours, minutes, seconds].map((value) => `${value}`.padStart(2, '0')).join(':');
+
+	return days > 0 ? `${days}d ${hhmmss}` : hhmmss;
 }
