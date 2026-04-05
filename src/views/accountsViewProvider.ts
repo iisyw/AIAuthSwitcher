@@ -209,19 +209,25 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 		}
 
 		const usage = this.codexUsage;
+		const usageItems = [
+			createInfoItem('状态', formatAvailability(usage.isAvailable)),
+			createInfoItem('上游状态码', usage.upstreamStatus?.toString() ?? '未知'),
+		];
+		if (usage.planType !== 'free') {
+			usageItems.push(
+				createInfoItem('5小时窗口已用', formatPercent(usage.fiveHourWindow?.usedPercent)),
+				createInfoItem('5小时窗口重置时间', usage.fiveHourWindow?.resetAt ?? '未知')
+			);
+		}
+		usageItems.push(
+			createInfoItem('每周窗口已用', formatPercent(usage.weeklyWindow?.usedPercent)),
+			createInfoItem('每周窗口重置时间', usage.weeklyWindow?.resetAt ?? '未知'),
+			createInfoItem('上次查询时间', usage.lastFetchedAt ?? '未知'),
+			createInfoItem('查询结果', usage.message ?? '正常')
+		);
 		const section = createSection(
 			'当前账号Codex用量',
-			[
-				createInfoItem('套餐', formatPlanType(usage.planType)),
-				createInfoItem('状态', formatAvailability(usage.isAvailable)),
-				createInfoItem('上游状态码', usage.upstreamStatus?.toString() ?? '未知'),
-				createInfoItem('5小时窗口已用', formatPercent(usage.fiveHourWindow?.usedPercent)),
-				createInfoItem('5小时窗口重置时间', usage.fiveHourWindow?.resetAt ?? '未知'),
-				createInfoItem('每周窗口已用', formatPercent(usage.weeklyWindow?.usedPercent)),
-				createInfoItem('每周窗口重置时间', usage.weeklyWindow?.resetAt ?? '未知'),
-				createInfoItem('上次查询时间', usage.lastFetchedAt ?? '未知'),
-				createInfoItem('查询结果', usage.message ?? '正常'),
-			],
+			usageItems,
 			'pulse'
 		);
 		section.description = formatAvailability(usage.isAvailable);
@@ -231,9 +237,14 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 	private async buildBackupsSection(): Promise<AIAuthSwitcherItem> {
 		const backupDir = await ensureBackupDirectory(this.context);
 		const entries = await listBackupFiles(backupDir);
+		const sortedEntries = sortBackupEntriesByUsage(
+			entries,
+			this.backupUsageByPath,
+			this.backupUsageErrorByPath
+		);
 		const children =
-			entries.length > 0
-				? entries.map((entry) =>
+			sortedEntries.length > 0
+				? sortedEntries.map((entry) =>
 						createBackupItem(
 							entry,
 							this.backupUsageByPath.get(entry.authPath) ?? null,
@@ -249,7 +260,7 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 			children
 		);
 		section.contextValue = 'authBackupsSection';
-		section.description = `${entries.length}`;
+		section.description = `${sortedEntries.length}`;
 		section.iconPath = new vscode.ThemeIcon('files');
 		return section;
 	}
@@ -279,6 +290,52 @@ function createActionItem(label: string, command: string, iconId: string): AIAut
 	item.command = { command, title: label };
 	item.iconPath = new vscode.ThemeIcon(iconId);
 	return item;
+}
+
+function sortBackupEntriesByUsage<T extends { authPath: string; label: string }>(
+	entries: T[],
+	usageByPath: ReadonlyMap<string, CodexUsageSummary>,
+	errorByPath: ReadonlyMap<string, string>
+): T[] {
+	return entries
+		.map((entry, index) => ({
+			entry,
+			index,
+			sortKey: getBackupUsageSortKey(
+				usageByPath.get(entry.authPath) ?? null,
+				errorByPath.get(entry.authPath) ?? null
+			),
+		}))
+		.sort((left, right) => {
+			if (left.sortKey.category !== right.sortKey.category) {
+				return left.sortKey.category - right.sortKey.category;
+			}
+			if (left.sortKey.weeklyUsedPercent !== right.sortKey.weeklyUsedPercent) {
+				return left.sortKey.weeklyUsedPercent - right.sortKey.weeklyUsedPercent;
+			}
+			const labelCompare = left.entry.label.localeCompare(right.entry.label, 'zh-CN');
+			if (labelCompare !== 0) {
+				return labelCompare;
+			}
+			return left.index - right.index;
+		})
+		.map((item) => item.entry);
+}
+
+function getBackupUsageSortKey(
+	usage: CodexUsageSummary | null,
+	error: string | null
+): { category: number; weeklyUsedPercent: number } {
+	if (error) {
+		return { category: 2, weeklyUsedPercent: Number.POSITIVE_INFINITY };
+	}
+
+	const weeklyUsedPercent = usage?.weeklyWindow?.usedPercent;
+	if (typeof weeklyUsedPercent === 'number' && Number.isFinite(weeklyUsedPercent)) {
+		return { category: 0, weeklyUsedPercent };
+	}
+
+	return { category: 1, weeklyUsedPercent: Number.POSITIVE_INFINITY };
 }
 
 function formatAvailability(value: boolean | null): string {
@@ -333,14 +390,13 @@ function createBackupItem(entry: {
 }, usage: CodexUsageSummary | null, usageError: string | null, usageLoading: boolean): AIAuthSwitcherItem {
 	const item = new AIAuthSwitcherItem(
 		'backup',
-		entry.label,
+		formatBackupItemLabel(entry.label, usage, usageError, usageLoading),
 		vscode.TreeItemCollapsibleState.Collapsed,
 		buildBackupDetailItems(entry, usage, usageError, usageLoading),
 		entry.authPath
 	);
 	item.description = entry.isCurrent ? '当前' : undefined;
 	item.tooltip = entry.detail;
-	item.iconPath = new vscode.ThemeIcon('file');
 	item.contextValue = 'authBackup';
 	item.id = entry.authPath;
 	item.checkboxState = isBackupSelected(entry.authPath)
@@ -375,8 +431,7 @@ function buildBackupDetailItems(entry: {
 		createInfoItem('名称', summary.name ?? '未知'),
 		createInfoItem('套餐', summary.plan ?? '未知'),
 		createInfoItem('账号 ID', summary.accountId ?? '未知'),
-		createInfoItem('用户 ID', summary.userId ?? '未知'),
-		createInfoItem('文件', entry.detail ?? '未知')
+		createInfoItem('用户 ID', summary.userId ?? '未知')
 	);
 	return appendBackupUsageItems(items, usage, usageError, usageLoading);
 }
@@ -401,13 +456,36 @@ function appendBackupUsageItems(
 		return items;
 	}
 
-	items.push(createInfoItem('Codex套餐', formatPlanType(usage.planType)));
 	items.push(createInfoItem('Codex状态', formatAvailability(usage.isAvailable)));
-	items.push(createInfoItem('5小时窗口已用', formatPercent(usage.fiveHourWindow?.usedPercent)));
-	items.push(createInfoItem('5小时窗口重置时间', usage.fiveHourWindow?.resetAt ?? '未知'));
+	if (usage.planType !== 'free') {
+		items.push(createInfoItem('5小时窗口已用', formatPercent(usage.fiveHourWindow?.usedPercent)));
+		items.push(createInfoItem('5小时窗口重置时间', usage.fiveHourWindow?.resetAt ?? '未知'));
+	}
 	items.push(createInfoItem('每周窗口已用', formatPercent(usage.weeklyWindow?.usedPercent)));
 	items.push(createInfoItem('每周窗口重置时间', usage.weeklyWindow?.resetAt ?? '未知'));
 	items.push(createInfoItem('Codex查询结果', usage.message ?? '正常'));
 	items.push(createInfoItem('上次查询时间', usage.lastFetchedAt ?? '未知'));
 	return items;
+}
+
+function formatBackupItemLabel(
+	label: string,
+	usage: CodexUsageSummary | null,
+	usageError: string | null,
+	usageLoading: boolean
+): string {
+	if (usageLoading) {
+		return `查询中 | ${label}`;
+	}
+
+	if (usageError) {
+		return `失败 | ${label}`;
+	}
+
+	const weeklyUsedPercent = usage?.weeklyWindow?.usedPercent;
+	if (typeof weeklyUsedPercent === 'number' && Number.isFinite(weeklyUsedPercent)) {
+		return `${formatPercent(weeklyUsedPercent)} | ${label}`;
+	}
+
+	return `未知 | ${label}`;
 }

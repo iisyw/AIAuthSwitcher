@@ -40,12 +40,12 @@
       },
       {
         "command": "ai-auth-switcher.importAuthFiles",
-        "title": "AIAuthSwitcher：导入授权文件",
+        "title": "AIAuthSwitcher：导入",
         "icon": "$(git-stash)"
       },
       {
         "command": "ai-auth-switcher.exportAllBackups",
-        "title": "AIAuthSwitcher：导出已选备份",
+        "title": "AIAuthSwitcher：导出",
         "icon": "$(git-stash-pop)"
       },
       {
@@ -86,6 +86,11 @@
       {
         "command": "ai-auth-switcher.fetchBackupCodexUsage",
         "title": "AIAuthSwitcher：查询备份账号 Codex 用量",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "ai-auth-switcher.fetchAllBackupCodexUsage",
+        "title": "AIAuthSwitcher：批量查询备份账号 Codex 用量",
         "icon": "$(pulse)"
       }
     ],
@@ -167,18 +172,27 @@
         {
           "command": "ai-auth-switcher.fetchBackupCodexUsage",
           "when": "false"
+        },
+        {
+          "command": "ai-auth-switcher.fetchAllBackupCodexUsage",
+          "when": "false"
         }
       ],
       "view/item/context": [
         {
+          "command": "ai-auth-switcher.fetchAllBackupCodexUsage",
+          "when": "view == ai-auth-switcher.accountsView && viewItem == authBackupsSection",
+          "group": "inline@1"
+        },
+        {
           "command": "ai-auth-switcher.importAuthFiles",
           "when": "view == ai-auth-switcher.accountsView && viewItem == authBackupsSection",
-          "group": "inline"
+          "group": "inline@2"
         },
         {
           "command": "ai-auth-switcher.exportAllBackups",
           "when": "view == ai-auth-switcher.accountsView && viewItem == authBackupsSection",
-          "group": "inline"
+          "group": "inline@3"
         },
         {
           "command": "ai-auth-switcher.fetchBackupCodexUsage",

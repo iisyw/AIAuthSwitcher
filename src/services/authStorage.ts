@@ -70,7 +70,7 @@ export async function backupCurrentAuth(
 export async function importAuthFiles(
 	context: vscode.ExtensionContext,
 	refresh: () => void
-): Promise<void> {
+): Promise<string[]> {
 	const picked = await vscode.window.showQuickPick(
 		[
 			{
@@ -89,21 +89,20 @@ export async function importAuthFiles(
 	);
 
 	if (!picked) {
-		return;
+		return [];
 	}
 
 	if (picked.label === '粘贴授权内容导入') {
-		await importAuthText(context, refresh);
-		return;
+		return await importAuthText(context, refresh);
 	}
 
-	await importAuthFilesFromFile(context, refresh);
+	return await importAuthFilesFromFile(context, refresh);
 }
 
 async function importAuthFilesFromFile(
 	context: vscode.ExtensionContext,
 	refresh: () => void
-): Promise<void> {
+): Promise<string[]> {
 	try {
 		const selectedFiles = await vscode.window.showOpenDialog({
 			canSelectMany: true,
@@ -116,7 +115,7 @@ async function importAuthFilesFromFile(
 		});
 
 		if (!selectedFiles || selectedFiles.length === 0) {
-			return;
+			return [];
 		}
 
 		const backupDir = await ensureBackupDirectory(context);
@@ -124,6 +123,7 @@ async function importAuthFilesFromFile(
 		let updatedCount = 0;
 		let invalidCount = 0;
 		let parsedAccountCount = 0;
+		const importedPaths = new Set<string>();
 		const pendingImports = new Map<string, AuthFile>();
 		const pendingFallbackImports: AuthFile[] = [];
 
@@ -162,6 +162,7 @@ async function importAuthFilesFromFile(
 			const targetPath = existingBackupPath ?? path.join(backupDir, buildBackupFileName(summary));
 
 			await fs.writeFile(targetPath, `${JSON.stringify(auth, null, 2)}\n`, 'utf8');
+			importedPaths.add(targetPath);
 
 			if (existingBackupPath) {
 				updatedCount += 1;
@@ -174,15 +175,17 @@ async function importAuthFilesFromFile(
 		await vscode.window.showInformationMessage(
 			`导入完成。文件 ${selectedFiles.length} 个，解析账号 ${parsedAccountCount} 个，新增 ${importedCount} 个，更新 ${updatedCount} 个，无效文件 ${invalidCount} 个。`
 		);
+		return [...importedPaths];
 	} catch (error) {
 		await showError('导入授权文件失败。', error);
+		return [];
 	}
 }
 
 async function importAuthText(
 	context: vscode.ExtensionContext,
 	refresh: () => void
-): Promise<void> {
+): Promise<string[]> {
 	try {
 		const rawText = await vscode.window.showInputBox({
 			prompt:
@@ -194,19 +197,20 @@ async function importAuthText(
 		});
 
 		if (!rawText) {
-			return;
+			return [];
 		}
 
 		const payload = JSON.parse(rawText) as unknown;
 		const authEntries = extractImportablePastedAuthEntries(payload);
 		if (authEntries.length === 0) {
 			await vscode.window.showWarningMessage('未识别到可导入的授权内容。');
-			return;
+			return [];
 		}
 
 		const backupDir = await ensureBackupDirectory(context);
 		let importedCount = 0;
 		let updatedCount = 0;
+		const importedPaths = new Set<string>();
 		const pendingImports = new Map<string, AuthFile>();
 		const pendingFallbackImports: AuthFile[] = [];
 
@@ -228,6 +232,7 @@ async function importAuthText(
 			const targetPath = existingBackupPath ?? path.join(backupDir, buildBackupFileName(summary));
 
 			await fs.writeFile(targetPath, `${JSON.stringify(auth, null, 2)}\n`, 'utf8');
+			importedPaths.add(targetPath);
 			if (existingBackupPath) {
 				updatedCount += 1;
 			} else {
@@ -239,8 +244,10 @@ async function importAuthText(
 		await vscode.window.showInformationMessage(
 			`导入完成。解析账号 ${authEntries.length} 个，新增 ${importedCount} 个，更新 ${updatedCount} 个。`
 		);
+		return [...importedPaths];
 	} catch (error) {
 		await showError('粘贴导入授权失败。', error);
+		return [];
 	}
 }
 
@@ -256,24 +263,25 @@ export async function restoreBackupPath(
 		}
 
 		const backupDir = await ensureBackupDirectory(context);
-		const currentAuth = await readAuthFile(CODEX_AUTH_PATH);
-		const currentSummary = summarizeAuth(currentAuth);
+		const currentAuth = await tryReadAuthFile(CODEX_AUTH_PATH);
+		const currentSummary = currentAuth ? summarizeAuth(currentAuth) : null;
 		const targetAuth = await readAuthFile(authPath);
 
-		if (JSON.stringify(targetAuth) === JSON.stringify(currentAuth)) {
+		if (currentAuth && JSON.stringify(targetAuth) === JSON.stringify(currentAuth)) {
 			await vscode.window.showInformationMessage('这份备份已经是当前授权。');
 			return;
 		}
 
-		const existingBackupPath = await findMatchingBackup(backupDir, currentAuth);
-		if (!existingBackupPath) {
+		const existingBackupPath = currentAuth ? await findMatchingBackup(backupDir, currentAuth) : null;
+		if (currentAuth && !existingBackupPath) {
 			const safetyBackupPath = path.join(
 				backupDir,
-				`${buildTimestamp()}-auto-before-switch-${safeSegment(currentSummary.email ?? 'unknown')}.json`
+				`${buildTimestamp()}-auto-before-switch-${safeSegment(currentSummary?.email ?? 'unknown')}.json`
 			);
 			await fs.copyFile(CODEX_AUTH_PATH, safetyBackupPath);
 		}
 
+		await fs.mkdir(path.dirname(CODEX_AUTH_PATH), { recursive: true });
 		await fs.copyFile(authPath, CODEX_AUTH_PATH);
 		refresh();
 
@@ -406,8 +414,8 @@ export async function deleteBackupPath(authPath: string | null, refresh: () => v
 
 		const auth = await readAuthFile(authPath);
 		const summary = summarizeAuth(auth);
-		const currentAuth = await readAuthFile(CODEX_AUTH_PATH);
-		const isCurrent = JSON.stringify(auth) === JSON.stringify(currentAuth);
+		const currentAuth = await tryReadAuthFile(CODEX_AUTH_PATH);
+		const isCurrent = currentAuth ? JSON.stringify(auth) === JSON.stringify(currentAuth) : false;
 		const targetName = summary.email ?? path.basename(authPath);
 		const message = isCurrent
 			? `确定删除备份 ${targetName} 吗？这只会删除保存的备份文件，不会立刻让当前已加载账号退出，除非你之后再次切换授权。`
@@ -441,6 +449,17 @@ export async function readAuthFile(filePath: string): Promise<AuthFile> {
 	return (await readJsonFile(filePath)) as AuthFile;
 }
 
+async function tryReadAuthFile(filePath: string): Promise<AuthFile | null> {
+	try {
+		return await readAuthFile(filePath);
+	} catch (error) {
+		if (isMissingFileError(error)) {
+			return null;
+		}
+		throw error;
+	}
+}
+
 export async function ensureBackupDirectory(context: vscode.ExtensionContext): Promise<string> {
 	const backupDir = path.join(context.globalStorageUri.fsPath, 'auth-backups');
 	await fs.mkdir(backupDir, { recursive: true });
@@ -448,8 +467,8 @@ export async function ensureBackupDirectory(context: vscode.ExtensionContext): P
 }
 
 export async function listBackupFiles(backupDir: string): Promise<AuthBackupQuickPickItem[]> {
-	const currentAuth = await readAuthFile(CODEX_AUTH_PATH);
-	const currentRaw = JSON.stringify(currentAuth);
+	const currentAuth = await tryReadAuthFile(CODEX_AUTH_PATH);
+	const currentRaw = currentAuth ? JSON.stringify(currentAuth) : null;
 	const entries = await fs.readdir(backupDir, { withFileTypes: true });
 	const files = entries
 		.filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
@@ -460,7 +479,7 @@ export async function listBackupFiles(backupDir: string): Promise<AuthBackupQuic
 			const authPath = path.join(backupDir, entry.name);
 			const auth = await readAuthFile(authPath);
 			const summary = summarizeAuth(auth);
-			const isCurrent = JSON.stringify(auth) === currentRaw;
+			const isCurrent = currentRaw ? JSON.stringify(auth) === currentRaw : false;
 			return {
 				label: summary.email ?? entry.name,
 				description: isCurrent ? '当前' : undefined,
@@ -637,6 +656,10 @@ function buildIdentityKey(summary: AccountSummary): string | null {
 
 function stringValue(value: unknown): string | null {
 	return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function isMissingFileError(error: unknown): boolean {
+	return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
 async function readJsonFile(filePath: string): Promise<unknown> {
