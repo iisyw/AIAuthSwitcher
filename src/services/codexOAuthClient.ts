@@ -74,6 +74,13 @@ type AuthSessionPayload = {
 	workspaces?: WorkspaceItem[];
 };
 
+export type CodexOAuthBrowserFlow = {
+	state: string;
+	codeVerifier: string;
+	authorizeUrl: string;
+	redirectUri: string;
+};
+
 export async function performCodexOAuthLogin(
 	email: string,
 	password: string,
@@ -168,6 +175,53 @@ export async function performCodexOAuthLogin(
 
 	const tokens = await exchangeAuthorizationCode(authCode, codeVerifier, callbacks);
 	return buildAuthFile(email, tokens);
+}
+
+export function createCodexOAuthBrowserFlow(): CodexOAuthBrowserFlow {
+	const { codeVerifier, codeChallenge } = generatePkce();
+	const state = base64UrlEncode(crypto.randomBytes(32));
+	const authorizeUrl = `${OPENAI_AUTH_BASE}/oauth/authorize?${new URLSearchParams({
+		response_type: 'code',
+		client_id: OAUTH_CLIENT_ID,
+		redirect_uri: OAUTH_REDIRECT_URI,
+		scope: 'openid profile email offline_access',
+		code_challenge: codeChallenge,
+		code_challenge_method: 'S256',
+		state,
+		id_token_add_organizations: 'true',
+		codex_cli_simplified_flow: 'true',
+		originator: 'codex_cli_rs',
+	}).toString()}`;
+
+	return {
+		state,
+		codeVerifier,
+		authorizeUrl,
+		redirectUri: OAUTH_REDIRECT_URI,
+	};
+}
+
+export async function completeCodexOAuthBrowserFlow(
+	callbackUrlOrQuery: string,
+	flow: CodexOAuthBrowserFlow
+): Promise<AuthFile> {
+	const parsed = parseCodexAuthorizationInput(callbackUrlOrQuery);
+	if (!parsed.code) {
+		throw new Error('回调 URL 中缺少 code。');
+	}
+	if (!parsed.state) {
+		throw new Error('回调 URL 中缺少 state。');
+	}
+	if (parsed.state !== flow.state) {
+		throw new Error('state 校验失败，请重新开始网页登录。');
+	}
+
+	const tokens = await exchangeAuthorizationCode(parsed.code, flow.codeVerifier, {
+		log: () => {},
+		promptOtp: async () => undefined,
+		promptPassword: async () => undefined,
+	});
+	return buildAuthFile(null, tokens);
 }
 
 export async function refreshCodexAuthTokens(auth: AuthFile): Promise<AuthFile> {
@@ -750,7 +804,7 @@ async function followRedirectsForCode(
 	return null;
 }
 
-function buildAuthFile(email: string, tokens: Record<string, unknown>): AuthFile {
+function buildAuthFile(_email: string | null, tokens: Record<string, unknown>): AuthFile {
 	return buildAuthFileFromExisting(
 		{
 			auth_mode: 'chatgpt',
@@ -812,6 +866,27 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
 		return JSON.parse(Buffer.from(padBase64(payload), 'base64url').toString('utf8')) as Record<string, unknown>;
 	} catch {
 		return {};
+	}
+}
+
+function parseCodexAuthorizationInput(input: string): { code: string | null; state: string | null } {
+	const value = input.trim();
+	if (!value) {
+		return { code: null, state: null };
+	}
+
+	try {
+		const parsedUrl = new URL(value, OPENAI_AUTH_BASE);
+		return {
+			code: parsedUrl.searchParams.get('code'),
+			state: parsedUrl.searchParams.get('state'),
+		};
+	} catch {
+		const query = new URLSearchParams(value);
+		return {
+			code: query.get('code'),
+			state: query.get('state'),
+		};
 	}
 }
 
