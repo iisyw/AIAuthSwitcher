@@ -3,7 +3,9 @@ import {
 	ensureBackupDirectory,
 	isBackupSelected,
 	listBackupFiles,
+	readAuthFile,
 	readCurrentAccountSummary,
+	writeAuthFile,
 } from '../services/authStorage';
 import { fetchCodexUsageSummary, fetchCodexUsageSummaryForAuth } from '../services/codexUsage';
 import { AccountSummary, CodexUsageSummary } from '../types/auth';
@@ -34,6 +36,7 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 	private readonly backupUsageErrorByPath = new Map<string, string>();
 	private readonly backupUsageLoadingPaths = new Set<string>();
 	private backupCountdownRefreshTimer: NodeJS.Timeout | null = null;
+	private backupAutoRefreshTask: Promise<void> | null = null;
 
 	constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -309,8 +312,45 @@ export class AIAuthSwitcherViewProvider implements vscode.TreeDataProvider<AIAut
 
 		this.backupCountdownRefreshTimer = setTimeout(() => {
 			this.backupCountdownRefreshTimer = null;
-			this.refresh();
+			void this.handleBackupCountdownTimer();
 		}, nextRefreshMs);
+	}
+
+	private async handleBackupCountdownTimer(): Promise<void> {
+		await this.refreshExpiredBackupUsages();
+		this.refresh();
+	}
+
+	private async refreshExpiredBackupUsages(): Promise<void> {
+		if (this.backupAutoRefreshTask) {
+			await this.backupAutoRefreshTask;
+			return;
+		}
+
+		this.backupAutoRefreshTask = (async () => {
+			const expiredAuthPaths = getExpiredWeeklyUsagePaths(
+				this.backupUsageByPath,
+				this.backupUsageErrorByPath,
+				this.backupUsageLoadingPaths
+			);
+			for (const authPath of expiredAuthPaths) {
+				await this.refreshBackupCodexUsage(authPath, async (path) => {
+					const auth = await readAuthFile(path);
+					const result = await fetchCodexUsageSummaryForAuth(auth);
+					if (result.authChanged) {
+						await writeAuthFile(path, result.auth);
+					}
+					return {
+						summary: result.summary,
+						authChanged: result.authChanged,
+					};
+				});
+			}
+		})().finally(() => {
+			this.backupAutoRefreshTask = null;
+		});
+
+		await this.backupAutoRefreshTask;
 	}
 }
 
@@ -604,10 +644,35 @@ function formatWeeklyResetCountdown(usage: CodexUsageSummary | null): string {
 
 	const diffMs = resetAt.getTime() - Date.now();
 	if (diffMs <= 0) {
-		return '已至';
+		return '00:00:00';
 	}
 
 	return formatDuration(diffMs);
+}
+
+function getExpiredWeeklyUsagePaths(
+	usageByPath: ReadonlyMap<string, CodexUsageSummary>,
+	errorByPath: ReadonlyMap<string, string>,
+	loadingPaths: ReadonlySet<string>
+): string[] {
+	const expiredAuthPaths: string[] = [];
+
+	for (const [authPath, usage] of usageByPath.entries()) {
+		if (errorByPath.has(authPath) || loadingPaths.has(authPath)) {
+			continue;
+		}
+
+		const resetAt = parseLocalDateTime(usage.weeklyWindow?.resetAt ?? null);
+		if (!resetAt) {
+			continue;
+		}
+
+		if (resetAt.getTime() <= Date.now()) {
+			expiredAuthPaths.push(authPath);
+		}
+	}
+
+	return expiredAuthPaths;
 }
 
 function getNextBackupCountdownRefreshMs(
